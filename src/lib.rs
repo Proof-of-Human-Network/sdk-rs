@@ -6,18 +6,30 @@ pub use types::*;
 
 use reqwest::{Client, RequestBuilder};
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "tokio")]
-use tokio::time::sleep;
+use tokio::{sync::OnceCell, time::sleep};
+
+// ── Default nodes ──────────────────────────────────────────────────────────────
+
+pub const DEFAULT_NODES: &[&str] = &[
+    "https://bootnode.proofofhuman.ge",
+    "https://proofofhuman.ge",
+    "https://poh.assetux.com",
+];
 
 // ── Client options ────────────────────────────────────────────────────────────
 
 /// Configuration for [`PohClient`].
 #[derive(Debug, Clone)]
 pub struct PohClientOptions {
-    /// Base URL of the POH API, e.g. `"https://proofofhuman.ge"`.
-    pub base_url: String,
+    /// Fixed base URL. Use this OR `nodes`, not both.
+    pub base_url: Option<String>,
+    /// Candidate node URLs for automatic first-alive discovery.
+    /// Defaults to [`DEFAULT_NODES`] when both `base_url` and `nodes` are empty.
+    pub nodes: Vec<String>,
     /// API key for paid tier.
     pub api_key: Option<String>,
     /// Solana wallet address for free-tier request tracking.
@@ -27,9 +39,24 @@ pub struct PohClientOptions {
 }
 
 impl PohClientOptions {
+    /// Single fixed node — backward-compatible constructor.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
-            base_url:       base_url.into().trim_end_matches('/').to_owned(),
+            base_url:       Some(base_url.into().trim_end_matches('/').to_owned()),
+            nodes:          vec![],
+            api_key:        None,
+            wallet_address: None,
+            timeout:        Duration::from_secs(30),
+        }
+    }
+
+    /// Multi-node constructor — client picks the first responding node.
+    pub fn with_nodes(nodes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            base_url:       None,
+            nodes:          nodes.into_iter()
+                                 .map(|n| n.into().trim_end_matches('/').to_owned())
+                                 .collect(),
             api_key:        None,
             wallet_address: None,
             timeout:        Duration::from_secs(30),
@@ -49,6 +76,12 @@ impl PohClientOptions {
     pub fn timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self
+    }
+}
+
+impl Default for PohClientOptions {
+    fn default() -> Self {
+        Self::with_nodes(DEFAULT_NODES.iter().copied())
     }
 }
 
@@ -75,11 +108,45 @@ impl Default for PollOptions {
     }
 }
 
+// ── Node discovery helpers ────────────────────────────────────────────────────
+
+#[cfg(feature = "tokio")]
+async fn probe_node(http: &Client, node: &str) -> bool {
+    let url = format!("{}/healthz", node);
+    http.head(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .is_ok()
+}
+
+#[cfg(feature = "tokio")]
+async fn pick_first_alive(http: &Client, nodes: &[String]) -> Option<String> {
+    for node in nodes {
+        if probe_node(http, node).await {
+            return Some(node.clone());
+        }
+    }
+    None
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 /// Async Proof of Human API client.
 ///
-/// # Example
+/// # Example — default nodes (multi-node discovery)
+/// ```no_run
+/// use poh_sdk::{PohClient, PohClientOptions};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let poh = PohClient::new(PohClientOptions::default());
+///     let res = poh.scan("0xabc...", Default::default()).await.unwrap();
+///     println!("{:?}", res.result);
+/// }
+/// ```
+///
+/// # Example — single fixed node
 /// ```no_run
 /// use poh_sdk::{PohClient, PohClientOptions};
 ///
@@ -90,10 +157,21 @@ impl Default for PollOptions {
 ///     println!("{:?}", res.result);
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PohClient {
-    opts:   PohClientOptions,
-    http:   Client,
+    opts:         PohClientOptions,
+    http:         Client,
+    #[cfg(feature = "tokio")]
+    resolved_url: Arc<OnceCell<String>>,
+}
+
+impl std::fmt::Debug for PohClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PohClient")
+            .field("base_url", &self.opts.base_url)
+            .field("nodes", &self.opts.nodes)
+            .finish()
+    }
 }
 
 impl PohClient {
@@ -102,18 +180,61 @@ impl PohClient {
             .timeout(opts.timeout)
             .build()
             .expect("failed to build reqwest client");
-        Self { opts, http }
+        Self {
+            #[cfg(feature = "tokio")]
+            resolved_url: Arc::new(OnceCell::new()),
+            opts,
+            http,
+        }
+    }
+
+    // ── Node resolution ───────────────────────────────────────────────────────
+
+    #[cfg(feature = "tokio")]
+    async fn base_url(&self) -> Result<String> {
+        self.resolved_url.get_or_try_init(|| async {
+            if let Some(url) = &self.opts.base_url {
+                return Ok(url.clone());
+            }
+            let nodes = if self.opts.nodes.is_empty() {
+                DEFAULT_NODES.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            } else {
+                self.opts.nodes.clone()
+            };
+            pick_first_alive(&self.http, &nodes)
+                .await
+                .ok_or(PohError::NoNodeAvailable)
+        })
+        .await
+        .cloned()
+    }
+
+    #[cfg(not(feature = "tokio"))]
+    fn base_url(&self) -> Result<String> {
+        self.opts.base_url.clone()
+            .ok_or_else(|| PohError::InvalidArgument(
+                "base_url required when tokio feature is disabled".into()
+            ))
+    }
+
+    /// The currently selected node URL, or `None` if discovery has not yet run.
+    pub fn active_node(&self) -> Option<String> {
+        #[cfg(feature = "tokio")]
+        return self.resolved_url.get().cloned();
+        #[cfg(not(feature = "tokio"))]
+        return self.opts.base_url.clone();
     }
 
     // ── Request helper ────────────────────────────────────────────────────────
 
-    fn req(&self, method: reqwest::Method, path: &str) -> RequestBuilder {
-        let url = format!("{}{}", self.opts.base_url, path);
+    async fn req(&self, method: reqwest::Method, path: &str) -> Result<RequestBuilder> {
+        let base = self.base_url().await?;
+        let url  = format!("{}{}", base, path);
         let mut rb = self.http.request(method, url);
         if let Some(key) = &self.opts.api_key {
             rb = rb.header("x-api-key", key);
         }
-        rb
+        Ok(rb)
     }
 
     async fn send<T: serde::de::DeserializeOwned>(&self, rb: RequestBuilder) -> Result<T> {
@@ -133,9 +254,6 @@ impl PohClient {
     // ── Scan ──────────────────────────────────────────────────────────────────
 
     /// Scan a single wallet address.
-    ///
-    /// Returns `result: Some(true)` for human, `Some(false)` for not-human,
-    /// `None` for inconclusive.
     pub async fn scan(
         &self,
         input: &str,
@@ -155,13 +273,10 @@ impl PohClient {
             wallet_address: self.opts.wallet_address.as_deref(),
             opts: options,
         };
-        self.send(self.req(reqwest::Method::POST, "/checker").json(&body)).await
+        self.send(self.req(reqwest::Method::POST, "/checker").await?.json(&body)).await
     }
 
     /// Submit a bulk scan for multiple addresses.
-    ///
-    /// Returns a [`BulkScanResult`] with a `job_id`; use
-    /// [`poll_job`](Self::poll_job) to retrieve results.
     pub async fn scan_bulk(
         &self,
         inputs: &[&str],
@@ -184,7 +299,7 @@ impl PohClient {
             wallet_address: self.opts.wallet_address.as_deref(),
             opts: options,
         };
-        self.send(self.req(reqwest::Method::POST, "/checker").json(&body)).await
+        self.send(self.req(reqwest::Method::POST, "/checker").await?.json(&body)).await
     }
 
     // ── Job polling ───────────────────────────────────────────────────────────
@@ -192,20 +307,10 @@ impl PohClient {
     /// Fetch the current status of an async scan job.
     pub async fn get_job(&self, job_id: &str) -> Result<JobStatus> {
         let path = format!("/checker/job/{}", urlencoding::encode(job_id));
-        self.send(self.req(reqwest::Method::GET, &path)).await
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
     }
 
     /// Poll a job until it reaches `done` or `error`, then return the final status.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use poh_sdk::{PohClient, PohClientOptions, PollOptions};
-    /// # #[tokio::main] async fn main() {
-    /// # let poh = PohClient::new(PohClientOptions::new("http://localhost:3000"));
-    /// let opts = PollOptions { on_progress: Some(|j| println!("{}%", j.percent)), ..Default::default() };
-    /// let done = poh.poll_job("job-id", opts).await.unwrap();
-    /// # }
-    /// ```
     #[cfg(feature = "tokio")]
     pub async fn poll_job(&self, job_id: &str, opts: PollOptions) -> Result<JobStatus> {
         let deadline = std::time::Instant::now() + opts.timeout;
@@ -241,21 +346,10 @@ impl PohClient {
     /// Retrieve the AI brain verdict for a completed scan.
     pub async fn get_brain_verdict(&self, brain_key: &str) -> Result<BrainVerdict> {
         let path = format!("/checker/brain/{}", urlencoding::encode(brain_key));
-        self.send(self.req(reqwest::Method::GET, &path)).await
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
     }
 
     /// Poll the brain verdict until status leaves `"pending"`, then return it.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use poh_sdk::{PohClient, PohClientOptions, BrainPollOptions};
-    /// # #[tokio::main] async fn main() {
-    /// # let poh = PohClient::new(PohClientOptions::new("http://localhost:3000"));
-    /// let scan    = poh.scan("0xabc...", Default::default()).await.unwrap();
-    /// let verdict = poh.poll_brain_verdict(scan.brain_key.as_deref().unwrap(), Default::default()).await.unwrap();
-    /// println!("{:?}", verdict.verdict);
-    /// # }
-    /// ```
     #[cfg(feature = "tokio")]
     pub async fn poll_brain_verdict(
         &self,
@@ -276,18 +370,6 @@ impl PohClient {
     }
 
     /// Convenience: scan a single address and wait for the AI brain verdict.
-    ///
-    /// Returns both the raw [`ScanResult`] and the resolved [`BrainVerdict`].
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use poh_sdk::{PohClient, PohClientOptions};
-    /// # #[tokio::main] async fn main() {
-    /// # let poh = PohClient::new(PohClientOptions::new("http://localhost:3000"));
-    /// let sv = poh.scan_and_verdict("0xabc...", Default::default(), Default::default()).await.unwrap();
-    /// println!("{:?} ({:?})", sv.verdict.verdict, sv.verdict.confidence);
-    /// # }
-    /// ```
     #[cfg(feature = "tokio")]
     pub async fn scan_and_verdict(
         &self,
@@ -317,12 +399,12 @@ impl PohClient {
         let qs   = addr
             .map(|a| format!("?address={}", urlencoding::encode(a)))
             .unwrap_or_default();
-        self.send(self.req(reqwest::Method::GET, &format!("/verifyer{qs}"))).await
+        self.send(self.req(reqwest::Method::GET, &format!("/verifyer{qs}")).await?).await
     }
 
     /// Get a single method by ID.
     pub async fn get_method(&self, method_id: &str) -> Result<Method> {
         let path = format!("/verifyer/{}", urlencoding::encode(method_id));
-        self.send(self.req(reqwest::Method::GET, &path)).await
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
     }
 }

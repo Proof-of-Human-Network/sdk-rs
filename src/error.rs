@@ -16,6 +16,9 @@ pub enum PohError {
 
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("No POH node available — all candidates failed to respond")]
+    NoNodeAvailable,
 }
 
 pub type Result<T> = std::result::Result<T, PohError>;

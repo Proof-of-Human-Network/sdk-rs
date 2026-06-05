@@ -12,6 +12,19 @@ pub struct ScanOptions {
     pub tx_hash: Option<String>,
 }
 
+/// Present in [`ScanResult::ofac`] when the address is on the OFAC SDN list.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfacMatch {
+    pub name:            String,
+    pub program:         String,
+    pub chain_code:      String,
+    /// `"direct"` = scanned address itself; `"counterparty"` = 1-hop tx partner.
+    #[serde(rename = "type")]
+    pub match_type:      String,
+    pub matched_address: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanResult {
@@ -20,6 +33,8 @@ pub struct ScanResult {
     pub free_scans_left: Option<u32>,
     pub source: Option<String>,
     pub count: Option<u32>,
+    /// Set when the address (or a direct counterparty) is on the OFAC SDN list.
+    pub ofac: Option<OfacMatch>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
