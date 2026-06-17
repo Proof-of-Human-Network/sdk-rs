@@ -1,8 +1,12 @@
 mod error;
 mod types;
+#[cfg(feature = "signing")]
+pub mod signing;
 
 pub use error::{PohError, Result};
 pub use types::*;
+#[cfg(feature = "signing")]
+pub use signing::{generate_key_pair, sign_data, create_signing_proof, build_transfer, sign_transaction, compute_tx_hash};
 
 use reqwest::{Client, RequestBuilder};
 use serde::Serialize;
@@ -406,5 +410,217 @@ impl PohClient {
     pub async fn get_method(&self, method_id: &str) -> Result<Method> {
         let path = format!("/verifyer/{}", urlencoding::encode(method_id));
         self.send(self.req(reqwest::Method::GET, &path).await?).await
+    }
+
+    // ── Natural language jobs ─────────────────────────────────────────────────
+
+    /// Route a natural language question to a skill and submit it as a job.
+    ///
+    /// Returns immediately with an [`AskJobRef`]; poll with [`poll_job_result`]
+    /// or use [`ask_and_wait`] to block until the answer is ready.
+    ///
+    /// Returns [`PohError::InvalidArgument`] if no skill matches the question.
+    ///
+    /// [`poll_job_result`]: PohClient::poll_job_result
+    /// [`ask_and_wait`]: PohClient::ask_and_wait
+    pub async fn submit_job(&self, question: &str, opts: AskOptions) -> Result<AskJobRef> {
+        let max_budget = (opts.budget * 1_000_000_000.0) as i64;
+
+        // 1. Route to a skill
+        let route_body = serde_json::json!({
+            "message": question,
+            "budget":  max_budget,
+        });
+        let route: serde_json::Value = self.send(
+            self.req(reqwest::Method::POST, "/chat/route").await?.json(&route_body)
+        ).await?;
+
+        if route.get("type").and_then(|v| v.as_str()) != Some("skill") {
+            let reason = route.get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("No skill matched the question");
+            return Err(PohError::InvalidArgument(reason.to_owned()));
+        }
+        let skill_id = route.get("skillId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| PohError::InvalidArgument("No skillId in route response".into()))?;
+        let input = route.get("input").cloned()
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+
+        // 2. Submit job
+        let mut job_body = serde_json::json!({
+            "type":      "skill",
+            "skillId":   skill_id,
+            "payload":   input,
+            "maxBudget": max_budget,
+        });
+        if let Some(addr) = opts.wallet_address.as_deref()
+            .or(self.opts.wallet_address.as_deref())
+        {
+            job_body["requesterAddress"] = serde_json::Value::String(addr.to_owned());
+        }
+
+        self.send(self.req(reqwest::Method::POST, "/job").await?.json(&job_body)).await
+    }
+
+    /// Fetch the current status of a natural language job (without the full result).
+    pub async fn get_job_status(&self, job_id: &str) -> Result<AskJobStatus> {
+        let path = format!("/job/{}/status", urlencoding::encode(job_id));
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
+    }
+
+    /// Fetch the full result of a completed natural language job.
+    pub async fn get_job_result(&self, job_id: &str) -> Result<AskJobResult> {
+        let path = format!("/job/{}/result", urlencoding::encode(job_id));
+        let raw: AskJobResultRaw = self.send(
+            self.req(reqwest::Method::GET, &path).await?
+        ).await?;
+        Ok(raw.into())
+    }
+
+    /// Poll a natural language job until `done` or `error`, then return the result.
+    #[cfg(feature = "tokio")]
+    pub async fn poll_job_result(
+        &self,
+        job_id: &str,
+        opts: PollOptions,
+    ) -> Result<AskJobResult> {
+        let deadline = std::time::Instant::now() + opts.timeout;
+        loop {
+            let s = self.get_job_status(job_id).await?;
+            if s.status == "done" || s.status == "error" {
+                return self.get_job_result(job_id).await;
+            }
+            if std::time::Instant::now() + opts.interval > deadline {
+                return Err(PohError::PollTimeout);
+            }
+            sleep(opts.interval).await;
+        }
+    }
+
+    /// Convenience: route, submit, and wait for a natural language job.
+    ///
+    /// ```no_run
+    /// use poh_sdk::{PohClient, PohClientOptions, AskOptions, PollOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let poh = PohClient::new(PohClientOptions::default());
+    ///     let res = poh.ask_and_wait(
+    ///         "What does vitalik.eth write about on Paragraph?",
+    ///         AskOptions::new(0.5).wallet("poh..."),
+    ///         PollOptions::default(),
+    ///     ).await.unwrap();
+    ///     println!("{:?}", res.nl_response.or(res.output.map(|o| o.to_string())));
+    /// }
+    /// ```
+    #[cfg(feature = "tokio")]
+    pub async fn ask_and_wait(
+        &self,
+        question: &str,
+        ask_opts:  AskOptions,
+        poll_opts: PollOptions,
+    ) -> Result<AskJobResult> {
+        let job = self.submit_job(question, ask_opts).await?;
+        self.poll_job_result(&job.job_id, poll_opts).await
+    }
+
+    // ── Node info ─────────────────────────────────────────────────────────────
+
+    /// Fetch metadata about the currently connected node.
+    pub async fn get_node_info(&self) -> Result<NodeInfo> {
+        self.send(self.req(reqwest::Method::GET, "/healthz").await?).await
+    }
+
+    /// List all skills available on the connected node.
+    pub async fn list_skills(&self) -> Result<Vec<Skill>> {
+        self.send(self.req(reqwest::Method::GET, "/api/skills").await?).await
+    }
+
+    // ── Wallet / blockchain ───────────────────────────────────────────────────
+
+    /// Fetch the μPOH balance for an address.
+    pub async fn get_balance(&self, address: &str) -> Result<WalletBalance> {
+        let path = format!("/api/wallet/balance?address={}", urlencoding::encode(address));
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
+    }
+
+    /// Fetch the current transaction nonce for an address.
+    pub async fn get_nonce(&self, address: &str) -> Result<AccountNonce> {
+        let path = format!("/api/wallet/nonce?address={}", urlencoding::encode(address));
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
+    }
+
+    /// Fetch the transaction history for an address.
+    pub async fn get_transaction_history(&self, address: &str, limit: usize) -> Result<TxHistoryResult> {
+        let path = format!(
+            "/api/wallet/history?address={}&limit={}",
+            urlencoding::encode(address),
+            limit,
+        );
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
+    }
+
+    /// Fetch raw transactions for an address.
+    pub async fn get_transactions(&self, address: &str) -> Result<serde_json::Value> {
+        let path = format!("/api/wallet/transactions?address={}", urlencoding::encode(address));
+        self.send(self.req(reqwest::Method::GET, &path).await?).await
+    }
+
+    /// Fetch all pending (unconfirmed) transactions in the node's mempool.
+    pub async fn get_pending_transactions(&self) -> Result<PendingTxResult> {
+        self.send(self.req(reqwest::Method::GET, "/api/tx/pending").await?).await
+    }
+
+    /// Submit a signed [`PohTx`] to the network.
+    pub async fn submit_transaction(&self, tx: &PohTx) -> Result<TxSubmitResult> {
+        self.send(self.req(reqwest::Method::POST, "/api/tx/submit").await?.json(tx)).await
+    }
+
+    /// Register an Ed25519 signing public key (SPKI PEM) for a wallet address.
+    ///
+    /// `proof` is a base64-encoded Ed25519 signature of the raw address bytes,
+    /// produced by the matching private key (see [`create_signing_proof`]).
+    ///
+    /// [`create_signing_proof`]: crate::signing::create_signing_proof
+    pub async fn register_signing_key(
+        &self,
+        address: &str,
+        signing_public_key: &str,
+        proof: &str,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "address":          address,
+            "signingPublicKey": signing_public_key,
+            "proof":            proof,
+        });
+        self.send(self.req(reqwest::Method::POST, "/api/wallet/register-key").await?.json(&body)).await
+    }
+
+    /// Fetch metadata about the miner node (gas price, model, queue length, reputation).
+    pub async fn get_miner_info(&self) -> Result<MinerInfo> {
+        self.send(self.req(reqwest::Method::GET, "/api/miner/info").await?).await
+    }
+
+    /// Convenience: build, sign, and submit a POH transfer in one call.
+    ///
+    /// `amount_poh` is in whole POH units (e.g. `1.5` = 1.5 POH = 1_500_000_000 μPOH).
+    /// The nonce is fetched automatically and incremented by 1.
+    #[cfg(feature = "signing")]
+    pub async fn transfer(
+        &self,
+        from: &str,
+        to: &str,
+        amount_poh: f64,
+        private_key_pem: &str,
+        fee: i64,
+        memo: &str,
+    ) -> Result<TxSubmitResult> {
+        let nonce_resp = self.get_nonce(from).await?;
+        let tx = signing::build_transfer(from, to, amount_poh, nonce_resp.nonce + 1, fee, memo)
+            .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        let signed = signing::sign_transaction(&tx, private_key_pem)
+            .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        self.submit_transaction(&signed).await
     }
 }

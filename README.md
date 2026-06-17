@@ -1,13 +1,16 @@
 # poh-sdk
 
-Rust SDK for the [Proof of Human](https://proofofhuman.ge) API.
+Rust SDK for the [Proof of Human](https://proofofhuman.ge) network.
 
 ## Add to your project
 
 ```toml
 [dependencies]
-poh-sdk = "0.1"
+poh-sdk = "0.3"
 tokio   = { version = "1", features = ["full"] }
+
+# Enable signing utilities:
+poh-sdk = { version = "0.3", features = ["signing"] }
 ```
 
 ## Quick start
@@ -18,153 +21,140 @@ use poh_sdk::{PohClient, PohClientOptions, ScanOptions};
 #[tokio::main]
 async fn main() -> poh_sdk::Result<()> {
     let poh = PohClient::new(
-        PohClientOptions::new("https://proofofhuman.ge")
+        PohClientOptions::new("https://bootnode.proofofhuman.ge")
             .api_key("your-api-key"),
     );
 
     let res = poh.scan("0xabc...", ScanOptions::default()).await?;
-
     match res.result {
-        Some(true)  => println!("Human ✓"),
-        Some(false) => println!("Bot ✗"),
+        Some(true)  => println!("Human"),
+        Some(false) => println!("Bot"),
         None        => println!("Inconclusive"),
     }
-
     Ok(())
 }
 ```
 
-## Bulk scanning
+## Natural language jobs
 
 ```rust
-use poh_sdk::{PohClient, PohClientOptions, ScanOptions, PollOptions};
+use poh_sdk::{PohClient, PohClientOptions, AskOptions};
 
-#[tokio::main]
-async fn main() -> poh_sdk::Result<()> {
-    let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
+let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
 
-    let done = poh.scan_and_wait(
-        &["0xaaa", "0xbbb", "0xccc"],
-        ScanOptions::default(),
-        PollOptions {
-            on_progress: Some(|job| println!("{:.0}% ({}/{})", job.percent, job.done, job.total)),
-            ..Default::default()
-        },
-    ).await?;
+let result = poh.ask_and_wait(
+    "What does vitalik.eth write about on Paragraph?",
+    AskOptions { budget: 0.5, wallet_address: Some("poh...".into()), ..Default::default() },
+    Default::default(),
+).await?;
 
-    for item in &done.results {
-        println!("{} → {:?}", item.input, item.result);
-    }
+println!("{:?}", result.output);
+if let Some(nl) = result.nl_response { println!("{nl}"); }
+```
 
-    Ok(())
+## Wallet / blockchain
+
+```rust
+// Balance (μPOH — divide by 1e9 for POH)
+let bal = poh.get_balance("poh...").await?;
+println!("{} μPOH", bal.balance);
+
+// Nonce (needed before building a transaction)
+let nonce = poh.get_nonce("poh...").await?;
+
+// Transaction history
+let history = poh.get_transaction_history("poh...", 50).await?;
+for entry in &history.entries {
+    println!("{}: {} μPOH", entry.tx_hash, entry.delta);
+}
+
+// Pending mempool transactions
+let pending = poh.get_pending_transactions().await?;
+println!("{} pending txs", pending.count);
+
+// Miner info
+let info = poh.get_miner_info().await?;
+println!("{} reputation={}", info.model, info.reputation);
+```
+
+## Signing & transactions
+
+Requires the `signing` feature:
+
+```toml
+poh-sdk = { version = "0.3", features = ["signing"] }
+```
+
+```rust
+use poh_sdk::{generate_key_pair, build_transfer, sign_transaction, create_signing_proof};
+
+// 1. Generate a keypair
+let kp = generate_key_pair()?;
+
+// 2. Register the public key with the node (one-time, per node)
+let proof = create_signing_proof(&my_address, &kp.signing_private_key)?;
+poh.register_signing_key(&my_address, &kp.signing_public_key, &proof).await?;
+
+// 3. Build, sign, and submit a transfer
+let nonce_resp = poh.get_nonce(&my_address).await?;
+let tx     = build_transfer(&my_address, &recipient, 5.0, nonce_resp.nonce + 1, 0, "")?;
+let signed = sign_transaction(&tx, &kp.signing_private_key)?;
+let result = poh.submit_transaction(&signed).await?;
+println!("{}", result.tx_hash);
+
+// One-liner convenience (fetches nonce automatically)
+let result = poh.transfer(&my_address, &recipient, 5.0, &kp.signing_private_key, 0, "").await?;
+```
+
+## Skills
+
+```rust
+let skills = poh.list_skills().await?;
+for skill in &skills {
+    println!("{} — {:?}", skill.id, skill.description);
 }
 ```
 
-## Step-by-step bulk flow
+## Bulk scans
 
 ```rust
-// 1. Submit
-let bulk = poh.scan_bulk(&["0xaaa", "0xbbb"], ScanOptions::default()).await?;
-println!("Job: {}", bulk.job_id);
+use poh_sdk::PollOptions;
 
-// 2. Poll until done
-let done = poh.poll_job(&bulk.job_id, PollOptions::default()).await?;
-assert!(done.is_terminal());
-```
+let done = poh.scan_and_wait(
+    &["0xaaa", "0xbbb", "0xccc"],
+    ScanOptions::default(),
+    PollOptions {
+        on_progress: Some(|job| println!("{:.0}%", job.percent)),
+        ..Default::default()
+    },
+).await?;
 
-## Signal methods
-
-```rust
-// List all available on-chain signal methods
-let methods = poh.get_methods(None).await?;
-for m in &methods {
-    println!("{} ({}) — score {}", m.id, m.method_type, m.score);
+for item in &done.results {
+    println!("{} → {:?}", item.input, item.result);
 }
-
-// Fetch a specific method
-let method = poh.get_method("method-id").await?;
-```
-
-## Brain verdict
-
-```rust
-let scan = poh.scan("0xabc...", ScanOptions::default()).await?;
-
-if let Some(key) = scan.brain_key {
-    let verdict = poh.get_brain_verdict(&key).await?;
-    println!("confidence: {:?}", verdict.confidence);
-    println!("reasoning:  {:?}", verdict.reasoning);
-}
-```
-
-## Client options
-
-```rust
-use std::time::Duration;
-
-let poh = PohClient::new(
-    PohClientOptions::new("https://proofofhuman.ge")
-        .api_key("sk-...")           // paid tier
-        .wallet_address("Abc123...") // free-tier tracking
-        .timeout(Duration::from_secs(60)),
-);
-```
-
-## Poll options
-
-```rust
-use std::time::Duration;
-
-let opts = PollOptions {
-    interval:    Duration::from_secs(2),
-    timeout:     Duration::from_secs(300),
-    on_progress: Some(|job| println!("{}%", job.percent)),
-};
-```
-
-## Scan options
-
-```rust
-let opts = ScanOptions {
-    chain_ids: Some(vec!["1".into(), "137".into()]),  // restrict to chains
-    tx_hash:   Some("0xdeadbeef...".into()),           // verify a specific tx
-};
 ```
 
 ## Error handling
 
-All methods return `poh_sdk::Result<T>` — a type alias for `std::result::Result<T, PohError>`.
+All methods return `poh_sdk::Result<T>` — `std::result::Result<T, PohError>`.
 
 ```rust
 use poh_sdk::PohError;
 
-match poh.scan("0xabc", ScanOptions::default()).await {
-    Ok(res)                              => println!("{:?}", res.result),
+match poh.get_balance("poh...").await {
+    Ok(bal)                               => println!("{}", bal.balance),
     Err(PohError::Api { status, message }) => eprintln!("API {status}: {message}"),
-    Err(PohError::PollTimeout)           => eprintln!("job timed out"),
-    Err(e)                               => eprintln!("error: {e}"),
+    Err(PohError::Network(_))             => eprintln!("network error"),
+    Err(e)                                => eprintln!("{e}"),
 }
 ```
-
-| Variant | When |
-|---------|------|
-| `PohError::Api { status, message }` | Server returned a non-2xx response |
-| `PohError::Network(e)` | Transport/connection failure |
-| `PohError::Timeout` | Per-request timeout exceeded |
-| `PohError::PollTimeout` | `poll_job` deadline exceeded |
-| `PohError::InvalidArgument(msg)` | Bad input (e.g. empty address list) |
 
 ## Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `tokio` | ✓ | Enables `poll_job` / `scan_and_wait` (requires `tokio` runtime) |
-
-To use without the `tokio` feature (raw async without polling helpers):
-
-```toml
-poh-sdk = { version = "0.1", default-features = false }
-```
+| `tokio` | ✓ | Enables polling helpers (`poll_job`, `scan_and_wait`, `ask_and_wait`) |
+| `signing` | — | Ed25519 keypair generation, transaction building and signing |
 
 ## License
 
