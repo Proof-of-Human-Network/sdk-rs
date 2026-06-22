@@ -137,3 +137,136 @@ pub fn sign_transaction(tx: &PohTx, private_key_pem: &str) -> Result<PohTx, Box<
         memo: tx.memo.clone(),
     })
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{pkcs8::DecodePublicKey, Verifier, VerifyingKey};
+
+    #[test]
+    fn generate_key_pair_returns_valid_pem_strings() {
+        let kp = generate_key_pair().unwrap();
+        assert!(kp.signing_private_key.contains("-----BEGIN PRIVATE KEY-----"));
+        assert!(kp.signing_public_key.contains("-----BEGIN PUBLIC KEY-----"));
+    }
+
+    #[test]
+    fn generate_key_pair_produces_different_keys_each_call() {
+        let kp1 = generate_key_pair().unwrap();
+        let kp2 = generate_key_pair().unwrap();
+        assert_ne!(kp1.signing_private_key, kp2.signing_private_key);
+    }
+
+    #[test]
+    fn sign_data_returns_64_byte_signature() {
+        let kp = generate_key_pair().unwrap();
+        let sig = sign_data("hello world", &kp.signing_private_key).unwrap();
+        let bytes = B64.decode(&sig).unwrap();
+        assert_eq!(bytes.len(), 64);
+    }
+
+    #[test]
+    fn sign_data_is_deterministic() {
+        let kp = generate_key_pair().unwrap();
+        let s1 = sign_data("msg", &kp.signing_private_key).unwrap();
+        let s2 = sign_data("msg", &kp.signing_private_key).unwrap();
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn sign_data_differs_for_different_messages() {
+        let kp = generate_key_pair().unwrap();
+        let s1 = sign_data("A", &kp.signing_private_key).unwrap();
+        let s2 = sign_data("B", &kp.signing_private_key).unwrap();
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn create_signing_proof_equals_sign_data_of_address() {
+        let kp = generate_key_pair().unwrap();
+        let addr = "poh_test_address";
+        assert_eq!(
+            create_signing_proof(addr, &kp.signing_private_key).unwrap(),
+            sign_data(addr, &kp.signing_private_key).unwrap()
+        );
+    }
+
+    #[test]
+    fn sign_data_verifies_with_public_key() {
+        use ed25519_dalek::Signature;
+        let kp = generate_key_pair().unwrap();
+        let sig_b64 = sign_data("verify me", &kp.signing_private_key).unwrap();
+        let sig_bytes = B64.decode(&sig_b64).unwrap();
+        let vk = VerifyingKey::from_public_key_pem(&kp.signing_public_key).unwrap();
+        let sig = Signature::from_slice(&sig_bytes).unwrap();
+        vk.verify(b"verify me", &sig).expect("signature must be valid");
+    }
+
+    #[test]
+    fn compute_tx_hash_returns_64_char_hex() {
+        let h = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn compute_tx_hash_is_deterministic() {
+        let h1 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h2 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn compute_tx_hash_differs_for_different_amounts() {
+        let h1 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h2 = compute_tx_hash("pohA", "pohB", 2_000_000_000, 0, 1, 1_700_000_000_000, "");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn build_transfer_converts_poh_to_μpoh() {
+        let tx = build_transfer("pohA", "pohB", 1.5, 3, 0, "").unwrap();
+        assert_eq!(tx.amount, 1_500_000_000);
+    }
+
+    #[test]
+    fn build_transfer_rejects_zero_amount() {
+        assert!(build_transfer("pohA", "pohB", 0.0, 1, 0, "").is_err());
+    }
+
+    #[test]
+    fn sign_transaction_fills_in_signing_fields() {
+        let kp = generate_key_pair().unwrap();
+        let tx = build_transfer("pohA", "pohB", 2.0, 1, 0, "").unwrap();
+        let signed = sign_transaction(&tx, &kp.signing_private_key).unwrap();
+        assert!(signed.tx_hash.is_some());
+        assert!(signed.signature.is_some());
+        assert!(signed.signing_public_key.as_ref().unwrap().contains("-----BEGIN PUBLIC KEY-----"));
+    }
+
+    #[test]
+    fn sign_transaction_preserves_original_fields() {
+        let kp = generate_key_pair().unwrap();
+        let tx = build_transfer("pohA", "pohB", 3.0, 7, 500, "hello").unwrap();
+        let signed = sign_transaction(&tx, &kp.signing_private_key).unwrap();
+        assert_eq!(signed.from, tx.from);
+        assert_eq!(signed.to, tx.to);
+        assert_eq!(signed.amount, tx.amount);
+        assert_eq!(signed.nonce, tx.nonce);
+    }
+
+    #[test]
+    fn sign_transaction_signature_verifies() {
+        use ed25519_dalek::Signature;
+        let kp = generate_key_pair().unwrap();
+        let tx = build_transfer("pohA", "pohB", 1.0, 1, 0, "").unwrap();
+        let signed = sign_transaction(&tx, &kp.signing_private_key).unwrap();
+        let sig_bytes = B64.decode(signed.signature.as_ref().unwrap()).unwrap();
+        let vk = VerifyingKey::from_public_key_pem(signed.signing_public_key.as_ref().unwrap()).unwrap();
+        let sig = Signature::from_slice(&sig_bytes).unwrap();
+        vk.verify(signed.tx_hash.as_ref().unwrap().as_bytes(), &sig)
+            .expect("signature must be valid");
+    }
+}
