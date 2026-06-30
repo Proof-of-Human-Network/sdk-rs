@@ -55,14 +55,22 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 // ── Key generation ─────────────────────────────────────────────────────────
 
+/// Derive the canonical poh address bound to an ed25519 SPKI PEM public key.
+pub fn derive_address_from_signing_key(signing_public_key: &str) -> String {
+    let digest = Sha256::digest(signing_public_key.as_bytes());
+    format!("poh{}", bytes_to_hex(&digest)[..40].to_string())
+}
+
 /// Generate a fresh Ed25519 [`KeyPair`] (PKCS8 PEM private, SPKI PEM public).
 pub fn generate_key_pair() -> Result<KeyPair, Box<dyn std::error::Error>> {
     let mut seed = [0u8; 32];
     OsRng.fill_bytes(&mut seed);
     let signing_key = SigningKey::from_bytes(&seed);
+    let signing_public_key = public_key_to_pem(&signing_key.verifying_key());
     Ok(KeyPair {
         signing_private_key: private_key_to_pem(&signing_key),
-        signing_public_key:  public_key_to_pem(&signing_key.verifying_key()),
+        signing_public_key:  signing_public_key.clone(),
+        address:             derive_address_from_signing_key(&signing_public_key),
     })
 }
 
@@ -80,6 +88,20 @@ pub fn sign_data(message: &str, private_key_pem: &str) -> Result<String, Box<dyn
 /// Create the registration proof: sign the wallet address, return base64.
 pub fn create_signing_proof(wallet_address: &str, private_key_pem: &str) -> Result<String, Box<dyn std::error::Error>> {
     sign_data(wallet_address, private_key_pem)
+}
+
+/// Create the rotation proof required to replace an existing registered key.
+pub fn create_rotation_proof(
+    address: &str,
+    new_signing_public_key: &str,
+    existing_private_key_pem: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let payload = format!(
+        r#"{{"action":"rotate-key","address":{},"newSigningPublicKey":{}}}"#,
+        serde_json::to_string(address).unwrap(),
+        serde_json::to_string(new_signing_public_key).unwrap(),
+    );
+    sign_data(&payload, existing_private_key_pem)
 }
 
 // ── Transaction hash ──────────────────────────────────────────────────────
@@ -207,6 +229,8 @@ mod tests {
         let kp = generate_key_pair().unwrap();
         assert!(kp.signing_private_key.contains("-----BEGIN PRIVATE KEY-----"));
         assert!(kp.signing_public_key.contains("-----BEGIN PUBLIC KEY-----"));
+        assert!(kp.address.starts_with("poh"));
+        assert_eq!(kp.address, derive_address_from_signing_key(&kp.signing_public_key));
     }
 
     #[test]

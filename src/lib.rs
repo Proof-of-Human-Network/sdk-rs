@@ -7,7 +7,8 @@ pub use error::{PohError, Result};
 pub use types::*;
 #[cfg(feature = "signing")]
 pub use signing::{
-    generate_key_pair, sign_data, create_signing_proof, build_transfer, sign_transaction, compute_tx_hash,
+    generate_key_pair, derive_address_from_signing_key, sign_data, create_signing_proof,
+    create_rotation_proof, build_transfer, sign_transaction, compute_tx_hash,
     generate_job_id, compute_job_payment_hash, sign_job_payment,
 };
 
@@ -43,6 +44,8 @@ pub struct PohClientOptions {
     pub wallet_address: Option<String>,
     /// Per-request timeout. Default: 30 s.
     pub timeout: Duration,
+    /// Local miner URL for state-changing requests (wallet, tx, jobs).
+    pub local_base_url: Option<String>,
 }
 
 impl PohClientOptions {
@@ -54,6 +57,7 @@ impl PohClientOptions {
             api_key:        None,
             wallet_address: None,
             timeout:        Duration::from_secs(30),
+            local_base_url: None,
         }
     }
 
@@ -67,7 +71,13 @@ impl PohClientOptions {
             api_key:        None,
             wallet_address: None,
             timeout:        Duration::from_secs(30),
+            local_base_url: None,
         }
+    }
+
+    pub fn local_base_url(mut self, url: impl Into<String>) -> Self {
+        self.local_base_url = Some(url.into().trim_end_matches('/').to_owned());
+        self
     }
 
     pub fn api_key(mut self, key: impl Into<String>) -> Self {
@@ -232,10 +242,48 @@ impl PohClient {
         return self.opts.base_url.clone();
     }
 
+    fn needs_local_node(method: &reqwest::Method, path: &str) -> bool {
+        if method == reqwest::Method::GET || method == reqwest::Method::HEAD || method == reqwest::Method::OPTIONS {
+            return false;
+        }
+        let p = path.split('?').next().unwrap_or(path);
+        !(method == reqwest::Method::POST && p == "/gossip")
+    }
+
+    fn is_loopback(url: &str) -> bool {
+        let host = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("");
+        matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")
+    }
+
+    async fn resolve_base_url(&self, method: &reqwest::Method, path: &str) -> Result<String> {
+        if !Self::needs_local_node(method, path) {
+            return self.base_url().await;
+        }
+        if let Some(local) = &self.opts.local_base_url {
+            return Ok(local.clone());
+        }
+        let remote = self.base_url().await?;
+        if Self::is_loopback(&remote) {
+            return Ok(remote);
+        }
+        Err(PohError::Api {
+            status: 403,
+            message: "This operation requires a local miner node. Set local_base_url in PohClientOptions.".into(),
+        })
+    }
+
     // ── Request helper ────────────────────────────────────────────────────────
 
     async fn req(&self, method: reqwest::Method, path: &str) -> Result<RequestBuilder> {
-        let base = self.base_url().await?;
+        let base = self.resolve_base_url(&method, path).await?;
         let url  = format!("{}{}", base, path);
         let mut rb = self.http.request(method, url);
         if let Some(key) = &self.opts.api_key {
@@ -614,7 +662,12 @@ impl PohClient {
 
     /// List all skills available on the connected node.
     pub async fn list_skills(&self) -> Result<Vec<Skill>> {
-        self.send(self.req(reqwest::Method::GET, "/api/skills").await?).await
+        let value: serde_json::Value =
+            self.send(self.req(reqwest::Method::GET, "/api/skills").await?).await?;
+        let items = value.as_array().cloned().or_else(|| {
+            value.get("skills").and_then(|s| s.as_array()).cloned()
+        }).unwrap_or_default();
+        Ok(items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
     }
 
     // ── Wallet / blockchain ───────────────────────────────────────────────────
@@ -668,13 +721,34 @@ impl PohClient {
         address: &str,
         signing_public_key: &str,
         proof: &str,
+        rotation_proof: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "address":          address,
             "signingPublicKey": signing_public_key,
             "proof":            proof,
         });
+        if let Some(rp) = rotation_proof {
+            body["rotationProof"] = serde_json::Value::String(rp.to_string());
+        }
         self.send(self.req(reqwest::Method::POST, "/api/wallet/register-key").await?.json(&body)).await
+    }
+
+    /// Register a [`KeyPair`] from [`generate_key_pair`].
+    #[cfg(feature = "signing")]
+    pub async fn register_key_pair(
+        &self,
+        key_pair: &crate::types::KeyPair,
+        rotation_proof: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let proof = crate::signing::create_signing_proof(&key_pair.address, &key_pair.signing_private_key)
+            .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        self.register_signing_key(
+            &key_pair.address,
+            &key_pair.signing_public_key,
+            &proof,
+            rotation_proof,
+        ).await
     }
 
     /// Fetch metadata about the miner node (gas price, model, queue length, reputation).
@@ -697,7 +771,8 @@ impl PohClient {
         memo: &str,
     ) -> Result<TxSubmitResult> {
         let nonce_resp = self.get_nonce(from).await?;
-        let tx = signing::build_transfer(from, to, amount_poh, nonce_resp.nonce + 1, fee, memo)
+        let next_nonce = nonce_resp.pending_nonce.unwrap_or(nonce_resp.nonce) + 1;
+        let tx = signing::build_transfer(from, to, amount_poh, next_nonce, fee, memo)
             .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
         let signed = signing::sign_transaction(&tx, private_key_pem)
             .map_err(|e| PohError::InvalidArgument(e.to_string()))?;

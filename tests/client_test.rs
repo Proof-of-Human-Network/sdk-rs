@@ -688,7 +688,7 @@ async fn register_signing_key_posts_and_succeeds() {
         .await;
 
     let res = client(&server.uri())
-        .register_signing_key("pohA", "pubkey-pem", "proof-b64")
+        .register_signing_key("pohA", "pubkey-pem", "proof-b64", None)
         .await
         .unwrap();
     assert_eq!(res["success"], json!(true));

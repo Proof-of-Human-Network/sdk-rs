@@ -319,9 +319,12 @@ pub struct WalletBalance {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountNonce {
     pub address: String,
     pub nonce: i64,
+    #[serde(default)]
+    pub pending_nonce: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -389,4 +392,6 @@ pub struct KeyPair {
     pub signing_private_key: String,
     /// SPKI PEM public key. Register with the node via `register_signing_key()`.
     pub signing_public_key: String,
+    /// Canonical `poh…` address derived from `signing_public_key`.
+    pub address: String,
 }

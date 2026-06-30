@@ -118,22 +118,21 @@ poh-sdk = { version = "0.3", features = ["signing"] }
 ```rust
 use poh_sdk::{generate_key_pair, build_transfer, sign_transaction, create_signing_proof};
 
-// 1. Generate a keypair
+// 1. Generate a keypair — address is derived from the signing public key
 let kp = generate_key_pair()?;
 
-// 2. Register the public key with the node (one-time, per node)
-let proof = create_signing_proof(&my_address, &kp.signing_private_key)?;
-poh.register_signing_key(&my_address, &kp.signing_public_key, &proof).await?;
+// 2. Register with your local node (one-time, per node)
+poh.register_key_pair(&kp, None).await?;
 
 // 3. Build, sign, and submit a transfer
-let nonce_resp = poh.get_nonce(&my_address).await?;
-let tx     = build_transfer(&my_address, &recipient, 5.0, nonce_resp.nonce + 1, 0, "")?;
+let nonce_resp = poh.get_nonce(&kp.address).await?;
+let tx     = build_transfer(&kp.address, &recipient, 5.0, nonce_resp.nonce + 1, 0, "")?;
 let signed = sign_transaction(&tx, &kp.signing_private_key)?;
 let result = poh.submit_transaction(&signed).await?;
 println!("{}", result.tx_hash);
 
 // One-liner convenience (fetches nonce automatically)
-let result = poh.transfer(&my_address, &recipient, 5.0, &kp.signing_private_key, 0, "").await?;
+let result = poh.transfer(&kp.address, &recipient, 5.0, &kp.signing_private_key, 0, "").await?;
 ```
 
 ## Skills
