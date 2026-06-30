@@ -97,6 +97,63 @@ pub fn compute_tx_hash(from: &str, to: &str, amount: i64, fee: i64, nonce: i64, 
     bytes_to_hex(&digest)
 }
 
+// ── Job IDs ────────────────────────────────────────────────────────────────
+
+/// Generate a client-side job id (`job-<millis>-<8 random hex chars>`), matching
+/// the shape the node itself would generate if `id` were omitted from the request.
+/// Fee-required jobs must fix the id before signing, since the payment proof is
+/// bound to it.
+pub fn generate_job_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let mut suffix = [0u8; 4];
+    OsRng.fill_bytes(&mut suffix);
+    format!("job-{}-{}", millis, bytes_to_hex(&suffix))
+}
+
+// ── Job fee payment ────────────────────────────────────────────────────────
+
+/// Compute the canonical payment hash for a job fee. Binds the fee to one
+/// specific job + miner + amount + nonce, so a signature over it can't be
+/// replayed against a different job or a higher budget. Must byte-for-byte
+/// match the node's own `computeJobPaymentHash`.
+pub fn compute_job_payment_hash(
+    job_id: &str,
+    requester_address: &str,
+    miner_address: &str,
+    amount: i64,
+    nonce: i64,
+) -> String {
+    let canonical = format!(
+        r#"{{"jobId":{},"requesterAddress":{},"minerAddress":{},"amount":{},"nonce":{}}}"#,
+        serde_json::to_string(job_id).unwrap(),
+        serde_json::to_string(requester_address).unwrap(),
+        serde_json::to_string(miner_address).unwrap(),
+        amount, nonce,
+    );
+    let digest = Sha256::digest(canonical.as_bytes());
+    bytes_to_hex(&digest)
+}
+
+/// Sign a fee payment authorizing a fee-required job (skill execution, or a
+/// model/dataset compute job). The result (`txHash`, `signature`) goes in the
+/// `paymentTx` field of a `POST /job` request — the node verifies the
+/// signature and debits the requester's balance before it will run the job.
+pub fn sign_job_payment(
+    job_id: &str,
+    requester_address: &str,
+    miner_address: &str,
+    amount: i64,
+    nonce: i64,
+    private_key_pem: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let tx_hash = compute_job_payment_hash(job_id, requester_address, miner_address, amount, nonce);
+    let signature = sign_data(&tx_hash, private_key_pem)?;
+    Ok((tx_hash, signature))
+}
+
 // ── Transaction building ──────────────────────────────────────────────────
 
 /// Build an unsigned [`PohTx`]. `amount_poh` is in whole POH (1 POH = 1e9 μPOH).
@@ -223,6 +280,54 @@ mod tests {
         let h1 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
         let h2 = compute_tx_hash("pohA", "pohB", 2_000_000_000, 0, 1, 1_700_000_000_000, "");
         assert_ne!(h1, h2);
+    }
+
+    /// Fixed value computed by the node's own algorithm — `crypto.createHash('sha256')
+    /// .update(JSON.stringify({from,to,amount,fee,nonce,timestamp,memo})).digest('hex')` —
+    /// for these exact inputs. The node recomputes and verifies this hash server-side
+    /// (WalletManager.applyTransaction), so any mismatch here means real transactions
+    /// built by this crate would be silently rejected.
+    #[test]
+    fn compute_tx_hash_matches_node_reference_value() {
+        let h = compute_tx_hash("pohA", "pohB", 1_000_000_000, 5, 3, 1_700_000_000_000, "hello");
+        assert_eq!(h, "e309a41e0c088876f2763f8d01ae434ff060bd4391202d555be1d96ee0f14c8a");
+    }
+
+    // ── job payment ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn compute_job_payment_hash_returns_64_char_hex() {
+        let h = compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0);
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn compute_job_payment_hash_is_deterministic() {
+        let h1 = compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0);
+        let h2 = compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0);
+        assert_eq!(h1, h2);
+    }
+
+    /// Fixed value computed by the node's own algorithm for these exact inputs — see
+    /// `computeJobPaymentHash` in miner-node.js. The node recomputes and verifies this
+    /// hash server-side before debiting the requester, so any mismatch here means real
+    /// jobs submitted by this crate would be rejected outright. Same fixture used in
+    /// the JS, Python, iOS, and Android SDKs.
+    #[test]
+    fn compute_job_payment_hash_matches_node_reference_value() {
+        let h = compute_job_payment_hash("job-abc", "pohAlice", "pohMiner", 500_000_000, 3);
+        assert_eq!(h, "1ed86280c1ab64d60d55a232a1c339299d32d8bd45e5f2bf26ff72b26d8908c0");
+    }
+
+    #[test]
+    fn sign_job_payment_returns_tx_hash_and_signature() {
+        let kp = generate_key_pair().unwrap();
+        let (tx_hash, signature) = sign_job_payment(
+            "job-1", "pohA", "pohMiner", 500_000_000, 0, &kp.signing_private_key,
+        ).unwrap();
+        assert_eq!(tx_hash, compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0));
+        assert!(!signature.is_empty());
     }
 
     #[test]

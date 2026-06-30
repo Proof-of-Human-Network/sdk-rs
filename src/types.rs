@@ -148,15 +148,64 @@ pub struct AskOptions {
     pub budget: f64,
     /// Wallet address to charge from. Required when budget > 0.
     pub wallet_address: Option<String>,
+    /// PKCS8 PEM Ed25519 private key used to sign the fee payment. Required
+    /// when `budget > 0` — skill jobs always require a fee, and the node
+    /// rejects the job outright without a valid signed payment proof.
+    pub private_key_pem: Option<String>,
 }
 
 impl AskOptions {
     pub fn new(budget: f64) -> Self {
-        Self { budget, wallet_address: None }
+        Self { budget, wallet_address: None, private_key_pem: None }
     }
 
     pub fn wallet(mut self, addr: impl Into<String>) -> Self {
         self.wallet_address = Some(addr.into());
+        self
+    }
+
+    pub fn private_key(mut self, pem: impl Into<String>) -> Self {
+        self.private_key_pem = Some(pem.into());
+        self
+    }
+}
+
+/// Options for submitting a paid compute job (user-specified model + dataset).
+#[derive(Debug, Clone)]
+pub struct ComputeOptions {
+    /// Which model to run, e.g. "qwen2.5:1.5b", "llama3.1:8b".
+    pub model: String,
+    /// Optional Hugging Face dataset id to ground the answer in (must be installed on the node).
+    pub dataset: Option<String>,
+    /// Fee in POH (e.g. 0.5 = 0.5 POH). Required — compute jobs are never free.
+    pub budget: f64,
+    /// Wallet address paying the fee.
+    pub wallet_address: String,
+    /// PKCS8 PEM Ed25519 private key used to sign the fee payment.
+    pub private_key_pem: String,
+    /// Optional explicit job id. Auto-generated if omitted.
+    pub job_id: Option<String>,
+}
+
+impl ComputeOptions {
+    pub fn new(
+        model: impl Into<String>,
+        budget: f64,
+        wallet_address: impl Into<String>,
+        private_key_pem: impl Into<String>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            dataset: None,
+            budget,
+            wallet_address: wallet_address.into(),
+            private_key_pem: private_key_pem.into(),
+            job_id: None,
+        }
+    }
+
+    pub fn dataset(mut self, dataset: impl Into<String>) -> Self {
+        self.dataset = Some(dataset.into());
         self
     }
 }

@@ -6,7 +6,10 @@ pub mod signing;
 pub use error::{PohError, Result};
 pub use types::*;
 #[cfg(feature = "signing")]
-pub use signing::{generate_key_pair, sign_data, create_signing_proof, build_transfer, sign_transaction, compute_tx_hash};
+pub use signing::{
+    generate_key_pair, sign_data, create_signing_proof, build_transfer, sign_transaction, compute_tx_hash,
+    generate_job_id, compute_job_payment_hash, sign_job_payment,
+};
 
 use reqwest::{Client, RequestBuilder};
 use serde::Serialize;
@@ -454,11 +457,88 @@ impl PohClient {
             "payload":   input,
             "maxBudget": max_budget,
         });
-        if let Some(addr) = opts.wallet_address.as_deref()
-            .or(self.opts.wallet_address.as_deref())
-        {
+        let wallet_address = opts.wallet_address.as_deref()
+            .or(self.opts.wallet_address.as_deref());
+        if let Some(addr) = wallet_address {
             job_body["requesterAddress"] = serde_json::Value::String(addr.to_owned());
         }
+
+        // Skill jobs always require a fee — sign the payment when budget > 0.
+        // No "unverified" fallback: the node rejects the job outright (never runs
+        // it) without a valid signed payment proof.
+        if max_budget > 0 {
+            #[cfg(feature = "signing")]
+            {
+                let requester = wallet_address.ok_or_else(|| PohError::InvalidArgument(
+                    "submit_job: wallet_address is required when budget > 0".into()
+                ))?;
+                let private_key = opts.private_key_pem.as_deref().ok_or_else(|| PohError::InvalidArgument(
+                    "submit_job: private_key_pem is required when budget > 0 — skill jobs always require a signed fee.".into()
+                ))?;
+                let job_id = crate::signing::generate_job_id();
+                job_body["id"] = serde_json::Value::String(job_id.clone());
+                let miner_info = self.get_miner_info().await?;
+                let nonce_info = self.get_nonce(requester).await?;
+                let (tx_hash, signature) = crate::signing::sign_job_payment(
+                    &job_id, requester, &miner_info.miner_address, max_budget, nonce_info.nonce, private_key,
+                ).map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+                job_body["paymentTx"] = serde_json::json!({ "txHash": tx_hash, "signature": signature });
+            }
+            #[cfg(not(feature = "signing"))]
+            {
+                return Err(PohError::InvalidArgument(
+                    "submit_job: budget > 0 requires the 'signing' crate feature to be enabled".into()
+                ));
+            }
+        }
+
+        self.send(self.req(reqwest::Method::POST, "/job").await?.json(&job_body)).await
+    }
+
+    /// Submit a paid compute job that runs a user-specified model (and, optionally,
+    /// grounds the answer in a Hugging Face dataset already installed on the node).
+    /// Compute jobs are never free — the node rejects the request outright unless
+    /// it carries a valid signed fee payment.
+    ///
+    /// ```no_run
+    /// use poh_sdk::{PohClient, PohClientOptions, ComputeOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let poh = PohClient::new(PohClientOptions::default());
+    ///     let opts = ComputeOptions::new("llama3.1:8b", 0.5, "poh...", "<pem>")
+    ///         .dataset("some-org/some-dataset");
+    ///     let ref_ = poh.run_compute("Summarize the top 5 rows", opts).await.unwrap();
+    ///     println!("{}", ref_.job_id);
+    /// }
+    /// ```
+    #[cfg(feature = "signing")]
+    pub async fn run_compute(&self, prompt: &str, opts: ComputeOptions) -> Result<AskJobRef> {
+        if opts.budget <= 0.0 {
+            return Err(PohError::InvalidArgument(
+                "run_compute: budget must be > 0 — compute jobs always require a fee".into()
+            ));
+        }
+        let max_budget = (opts.budget * 1_000_000_000.0) as i64;
+        let job_id = opts.job_id.clone().unwrap_or_else(crate::signing::generate_job_id);
+
+        let miner_info = self.get_miner_info().await?;
+        let nonce_info = self.get_nonce(&opts.wallet_address).await?;
+        let (tx_hash, signature) = crate::signing::sign_job_payment(
+            &job_id, &opts.wallet_address, &miner_info.miner_address,
+            max_budget, nonce_info.nonce, &opts.private_key_pem,
+        ).map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+
+        let job_body = serde_json::json!({
+            "id":               job_id,
+            "type":             "compute",
+            "model":            opts.model,
+            "dataset":          opts.dataset,
+            "payload":          { "prompt": prompt },
+            "maxBudget":        max_budget,
+            "requesterAddress": opts.wallet_address,
+            "paymentTx":        { "txHash": tx_hash, "signature": signature },
+        });
 
         self.send(self.req(reqwest::Method::POST, "/job").await?.json(&job_body)).await
     }

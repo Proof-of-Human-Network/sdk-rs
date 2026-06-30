@@ -37,6 +37,12 @@ async fn main() -> poh_sdk::Result<()> {
 
 ## Natural language jobs
 
+Skill jobs always require a fee — set `budget`, `wallet_address`, and
+`private_key_pem` on `AskOptions` (requires the `signing` feature) so the SDK
+can sign the payment. The node verifies the signature and debits the fee
+before it will run the job at all; it rejects the request outright (no job
+ever runs) without a valid signed payment.
+
 ```rust
 use poh_sdk::{PohClient, PohClientOptions, AskOptions};
 
@@ -44,13 +50,37 @@ let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
 
 let result = poh.ask_and_wait(
     "What does vitalik.eth write about on Paragraph?",
-    AskOptions { budget: 0.5, wallet_address: Some("poh...".into()), ..Default::default() },
+    AskOptions::new(0.5).wallet("poh...").private_key(my_private_key_pem),
     Default::default(),
 ).await?;
 
 println!("{:?}", result.output);
 if let Some(nl) = result.nl_response { println!("{nl}"); }
 ```
+
+## Compute jobs (your own model + dataset)
+
+Run inference with a model of your choice, optionally grounded in a Hugging
+Face dataset already installed on the node. Like skill jobs, compute jobs are
+never free — `run_compute` always signs a fee payment. Requires the `signing`
+feature.
+
+```rust
+use poh_sdk::{PohClient, PohClientOptions, ComputeOptions};
+
+let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
+
+let opts = ComputeOptions::new("llama3.1:8b", 0.5, "poh...", my_private_key_pem)
+    .dataset("some-org/some-dataset"); // optional
+
+let job_ref = poh.run_compute("Summarize the top 5 rows", opts).await?;
+let result  = poh.poll_job_result(&job_ref.job_id, Default::default()).await?;
+println!("{:?}", result.output);
+```
+
+Before either of these will work, the wallet's signing key must be registered
+with the node once via `register_signing_key()` — the node has no way to
+verify a signature for a key it has never seen.
 
 ## Wallet / blockchain
 

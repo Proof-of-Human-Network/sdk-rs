@@ -2,8 +2,8 @@
 //! Uses wiremock to intercept HTTP calls; no live server required.
 
 use poh_sdk::{
-    AskOptions, BrainPollOptions, PohClient, PohClientOptions, PollOptions, ScanOptions,
-    JobStatusCode,
+    AskOptions, BrainPollOptions, ComputeOptions, PohClient, PohClientOptions, PollOptions,
+    ScanOptions, JobStatusCode, generate_key_pair,
 };
 use serde_json::json;
 use wiremock::{
@@ -306,11 +306,122 @@ async fn submit_job_routes_to_skill_then_submits() {
         .mount(&server)
         .await;
 
+    // budget=0 (free job) — no signed payment required.
     let job_ref = client(&server.uri())
-        .submit_job("Summarise this", AskOptions::new(0.1))
+        .submit_job("Summarise this", AskOptions::new(0.0))
         .await
         .unwrap();
     assert_eq!(job_ref.job_id, "jnl-1");
+}
+
+#[tokio::test]
+async fn submit_job_errors_when_budget_positive_without_private_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/route"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "type": "skill", "skillId": "sk-sum", "input": {}
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server.uri())
+        .submit_job("Summarise this", AskOptions::new(0.5).wallet("pohAlice"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, poh_sdk::PohError::InvalidArgument(_)));
+}
+
+#[tokio::test]
+async fn submit_job_signs_a_nonce_bound_payment_proof_when_budget_positive() {
+    let server = MockServer::start().await;
+    let kp = generate_key_pair().unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/chat/route"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "type": "skill", "skillId": "sk-sum", "input": {}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/miner/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "minerAddress": "pohMiner", "gasPrice": 1, "model": "qwen2.5:1.5b",
+            "queueLength": 0, "reputation": 1.0,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/wallet/nonce"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "address": "pohAlice", "nonce": 3,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/job"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobId": "jnl-1", "status": "queued"
+        })))
+        .mount(&server)
+        .await;
+
+    let job_ref = client(&server.uri())
+        .submit_job("Summarise this", AskOptions::new(0.5).wallet("pohAlice").private_key(&kp.signing_private_key))
+        .await
+        .unwrap();
+    assert_eq!(job_ref.job_id, "jnl-1");
+}
+
+// ── run_compute ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn run_compute_errors_when_budget_not_positive() {
+    let server = MockServer::start().await;
+    let kp = generate_key_pair().unwrap();
+    let err = client(&server.uri())
+        .run_compute("hi", ComputeOptions::new("qwen2.5:1.5b", 0.0, "pohAlice", &kp.signing_private_key))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, poh_sdk::PohError::InvalidArgument(_)));
+}
+
+#[tokio::test]
+async fn run_compute_signs_payment_and_posts_model_dataset() {
+    let server = MockServer::start().await;
+    let kp = generate_key_pair().unwrap();
+
+    Mock::given(method("GET"))
+        .and(path("/api/miner/info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "minerAddress": "pohMiner", "gasPrice": 1, "model": "qwen2.5:1.5b",
+            "queueLength": 0, "reputation": 1.0,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/wallet/nonce"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "address": "pohAlice", "nonce": 7,
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/job"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jobId": "jc-1", "status": "queued"
+        })))
+        .mount(&server)
+        .await;
+
+    let opts = ComputeOptions::new("llama3.1:8b", 0.5, "pohAlice", &kp.signing_private_key)
+        .dataset("some-org/some-dataset");
+    let job_ref = client(&server.uri())
+        .run_compute("Summarize the top rows", opts)
+        .await
+        .unwrap();
+    assert_eq!(job_ref.job_id, "jc-1");
 }
 
 #[tokio::test]
