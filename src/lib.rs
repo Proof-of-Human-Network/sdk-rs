@@ -2,6 +2,8 @@ mod error;
 mod types;
 #[cfg(feature = "signing")]
 pub mod signing;
+#[cfg(feature = "chatcrypto")]
+pub mod chatcrypto;
 
 pub use error::{PohError, Result};
 pub use types::*;
@@ -10,6 +12,10 @@ pub use signing::{
     generate_key_pair, derive_address_from_signing_key, sign_data, create_signing_proof,
     create_rotation_proof, build_transfer, sign_transaction, compute_tx_hash,
     generate_job_id, compute_job_payment_hash, sign_job_payment,
+};
+#[cfg(feature = "chatcrypto")]
+pub use chatcrypto::{
+    derive_encryption_keypair, open, seal, EncryptionKeypair, SealedEnvelope,
 };
 
 use reqwest::{Client, RequestBuilder};
@@ -23,7 +29,7 @@ use tokio::{sync::OnceCell, time::sleep};
 // ── Default nodes ──────────────────────────────────────────────────────────────
 
 pub const DEFAULT_NODES: &[&str] = &[
-    "https://bootnode.proofofhuman.ge",
+    "https://miner.poh.ge",
     "https://proofofhuman.ge",
     "https://poh.assetux.com",
 ];

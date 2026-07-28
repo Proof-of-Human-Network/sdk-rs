@@ -21,7 +21,7 @@ use poh_sdk::{PohClient, PohClientOptions, ScanOptions};
 #[tokio::main]
 async fn main() -> poh_sdk::Result<()> {
     let poh = PohClient::new(
-        PohClientOptions::new("https://bootnode.proofofhuman.ge")
+        PohClientOptions::new("https://miner.poh.ge")
             .api_key("your-api-key"),
     );
 
@@ -188,3 +188,21 @@ match poh.get_balance("poh...").await {
 ## License
 
 MIT
+
+## Stablecoins (multi-currency)
+
+Five regional stablecoins ride alongside POH: `aiGEL`, `aiKGS`, `aiAMD`,
+`aiETB`, `aiBTN` (2 decimals; POH keeps 9 — μPOH).
+
+```rust
+// Transfer 12.50 aiGEL (display units; scaled at the asset's own decimals)
+let tx = build_transfer_with_currency(&from, &to, 12.5, nonce + 1, 0, "", "aiGEL")?;
+let signed = sign_transaction(&tx, &private_key_pem)?;
+
+// Job payment in a stablecoin (6th-key rule — POH hashes unchanged)
+let hash = compute_job_payment_hash_with_currency(&job_id, &me, &miner, 500, nonce, Some("aiKGS"));
+```
+
+POH transactions hash byte-identically to the historical preimage (`currency`
+enters the signed payload only when non-POH) — existing integrations are
+unaffected.

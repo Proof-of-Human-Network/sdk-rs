@@ -1,6 +1,6 @@
 [package]
 name        = "poh-sdk"
-version     = "0.4.0"
+version     = "0.4.2"
 edition     = "2021"
 description = "Proof of Human SDK — scan wallets, poll async jobs, access signal methods"
 license     = "MIT"
@@ -19,11 +19,15 @@ ed25519-dalek = { version = "2", optional = true, features = ["pkcs8", "pem"] }
 sha2          = { version = "0.10", optional = true }
 base64        = { version = "0.22", optional = true }
 rand          = { version = "0.8", optional = true }
+x25519-dalek  = { version = "2", optional = true, features = ["static_secrets"] }
+hkdf          = { version = "0.12", optional = true }
+aes-gcm       = { version = "0.10", optional = true }
 
 [features]
 default  = ["tokio"]
 tokio    = ["dep:tokio", "reqwest/http2"]
 signing  = ["dep:ed25519-dalek", "dep:sha2", "dep:base64", "dep:rand"]
+chatcrypto = ["dep:x25519-dalek", "dep:hkdf", "dep:aes-gcm", "dep:sha2", "dep:base64", "dep:rand"]
 
 [dev-dependencies]
 tokio          = { version = "1", features = ["full"] }

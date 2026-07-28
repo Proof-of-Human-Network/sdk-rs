@@ -670,6 +670,7 @@ async fn submit_transaction_posts_tx_and_returns_hash() {
     let tx = poh_sdk::PohTx {
         from: "pohA".into(), to: "pohB".into(),
         amount: 1_000_000_000, fee: 0, nonce: 1, timestamp: 1700000000000, memo: "".into(),
+        currency: None,
         tx_hash: Some("cafebabe".into()), signature: Some("sig".into()),
         signing_public_key: Some("pub".into()),
     };

@@ -108,15 +108,36 @@ pub fn create_rotation_proof(
 
 /// SHA-256 of the canonical JSON payload, returned as a lowercase hex string.
 pub fn compute_tx_hash(from: &str, to: &str, amount: i64, fee: i64, nonce: i64, timestamp: i64, memo: &str) -> String {
+    compute_tx_hash_with_currency(from, to, amount, fee, nonce, timestamp, memo, None)
+}
+
+/// Currency-aware tx hash. LOCKSTEP with the node: `currency` joins the
+/// preimage after `memo` ONLY when non-POH — a POH tx hashes byte-identically
+/// to the historical shape.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_tx_hash_with_currency(from: &str, to: &str, amount: i64, fee: i64, nonce: i64, timestamp: i64, memo: &str, currency: Option<&str>) -> String {
+    let currency_part = match currency {
+        Some(c) if c != "POH" => format!(r#","currency":{}"#, serde_json::to_string(c).unwrap()),
+        _ => String::new(),
+    };
     let canonical = format!(
-        r#"{{"from":{},"to":{},"amount":{},"fee":{},"nonce":{},"timestamp":{},"memo":{}}}"#,
+        r#"{{"from":{},"to":{},"amount":{},"fee":{},"nonce":{},"timestamp":{},"memo":{}{}}}"#,
         serde_json::to_string(from).unwrap(),
         serde_json::to_string(to).unwrap(),
         amount, fee, nonce, timestamp,
         serde_json::to_string(memo).unwrap(),
+        currency_part,
     );
     let digest = Sha256::digest(canonical.as_bytes());
     bytes_to_hex(&digest)
+}
+
+/// Decimals for an on-chain asset (mirror of the node's /api/assets registry).
+pub fn decimals_of(currency: Option<&str>) -> u32 {
+    match currency {
+        Some("aiGEL") | Some("aiKGS") | Some("aiAMD") | Some("aiETB") | Some("aiBTN") => 2,
+        _ => 9,
+    }
 }
 
 // ── Job IDs ────────────────────────────────────────────────────────────────
@@ -148,12 +169,30 @@ pub fn compute_job_payment_hash(
     amount: i64,
     nonce: i64,
 ) -> String {
+    compute_job_payment_hash_with_currency(job_id, requester_address, miner_address, amount, nonce, None)
+}
+
+/// Currency-aware job payment hash. LOCKSTEP with the node: `currency` is the
+/// SIXTH key ONLY when non-POH.
+pub fn compute_job_payment_hash_with_currency(
+    job_id: &str,
+    requester_address: &str,
+    miner_address: &str,
+    amount: i64,
+    nonce: i64,
+    currency: Option<&str>,
+) -> String {
+    let currency_part = match currency {
+        Some(c) if c != "POH" => format!(r#","currency":{}"#, serde_json::to_string(c).unwrap()),
+        _ => String::new(),
+    };
     let canonical = format!(
-        r#"{{"jobId":{},"requesterAddress":{},"minerAddress":{},"amount":{},"nonce":{}}}"#,
+        r#"{{"jobId":{},"requesterAddress":{},"minerAddress":{},"amount":{},"nonce":{}{}}}"#,
         serde_json::to_string(job_id).unwrap(),
         serde_json::to_string(requester_address).unwrap(),
         serde_json::to_string(miner_address).unwrap(),
         amount, nonce,
+        currency_part,
     );
     let digest = Sha256::digest(canonical.as_bytes());
     bytes_to_hex(&digest)
@@ -191,6 +230,27 @@ pub fn build_transfer(from: &str, to: &str, amount_poh: f64, nonce: i64, fee: i6
         from: from.to_owned(), to: to.to_owned(),
         amount, fee, nonce, timestamp,
         memo: memo.to_owned(),
+        currency: None,
+        tx_hash: None, signature: None, signing_public_key: None,
+    })
+}
+
+/// Build an unsigned [`PohTx`] denominated in a stablecoin. `amount` is in the
+/// asset's DISPLAY units (e.g. 12.50 aiGEL → 1250 raw at 2 decimals).
+pub fn build_transfer_with_currency(from: &str, to: &str, amount_display: f64, nonce: i64, fee: i64, memo: &str, currency: &str) -> Result<PohTx, Box<dyn std::error::Error>> {
+    if amount_display <= 0.0 {
+        return Err("amount must be positive".into());
+    }
+    let cur = if currency == "POH" { None } else { Some(currency.to_owned()) };
+    let amount = (amount_display * 10f64.powi(decimals_of(cur.as_deref()) as i32)).round() as i64;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as i64;
+    Ok(PohTx {
+        from: from.to_owned(), to: to.to_owned(),
+        amount, fee, nonce, timestamp,
+        memo: memo.to_owned(),
+        currency: cur,
         tx_hash: None, signature: None, signing_public_key: None,
     })
 }
@@ -202,7 +262,7 @@ pub fn sign_transaction(tx: &PohTx, private_key_pem: &str) -> Result<PohTx, Box<
     let signing_key = SigningKey::from_pkcs8_pem(private_key_pem)
         .map_err(|e| format!("failed to decode PKCS8 PEM: {e}"))?;
 
-    let tx_hash = compute_tx_hash(&tx.from, &tx.to, tx.amount, tx.fee, tx.nonce, tx.timestamp, &tx.memo);
+    let tx_hash = compute_tx_hash_with_currency(&tx.from, &tx.to, tx.amount, tx.fee, tx.nonce, tx.timestamp, &tx.memo, tx.currency.as_deref());
     let signature = signing_key.sign(tx_hash.as_bytes());
     let signature_b64 = B64.encode(signature.to_bytes());
     let public_pem = public_key_to_pem(&signing_key.verifying_key());

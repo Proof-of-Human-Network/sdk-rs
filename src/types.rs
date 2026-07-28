@@ -353,6 +353,9 @@ pub struct PohTx {
     pub nonce: i64,
     pub timestamp: i64,
     pub memo: String,
+    /// Asset ticker (aiGEL, aiKGS, …). `None` for POH — never serialized as "POH".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub currency: Option<String>,
     #[serde(rename = "txHash", skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
