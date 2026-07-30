@@ -274,6 +274,7 @@ pub fn sign_transaction(tx: &PohTx, private_key_pem: &str) -> Result<PohTx, Box<
         from: tx.from.clone(), to: tx.to.clone(),
         amount: tx.amount, fee: tx.fee, nonce: tx.nonce, timestamp: tx.timestamp,
         memo: tx.memo.clone(),
+        currency: tx.currency.clone(),
     })
 }
 

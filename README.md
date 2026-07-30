@@ -6,11 +6,11 @@ Rust SDK for the [Proof of Human](https://proofofhuman.ge) network.
 
 ```toml
 [dependencies]
-poh-sdk = "0.3"
+poh-sdk = "0.5"
 tokio   = { version = "1", features = ["full"] }
 
 # Enable signing utilities:
-poh-sdk = { version = "0.3", features = ["signing"] }
+poh-sdk = { version = "0.5", features = ["signing"] }
 ```
 
 ## Quick start
@@ -35,6 +35,57 @@ async fn main() -> poh_sdk::Result<()> {
 }
 ```
 
+## Multi-node failover
+
+The client can probe a list of nodes and use the first one that responds.
+`PohClientOptions::default()` uses the built-in default node list.
+
+```rust
+let poh = PohClient::new(PohClientOptions::with_nodes([
+    "https://miner.poh.ge",
+    "https://proofofhuman.ge",
+    "https://poh.assetux.com",
+]));
+
+// Which node was selected (None before the first request)?
+println!("{:?}", poh.active_node());
+```
+
+## Local miner routing
+
+Write operations (any non-GET request except `POST /gossip`) must go to a node
+you control. Set `local_base_url` to route them to your local miner while reads
+still hit the public nodes; without it, writes to a non-loopback node fail with
+a 403 explaining the requirement.
+
+```rust
+let poh = PohClient::new(
+    PohClientOptions::default().local_base_url("http://127.0.0.1:3456"),
+);
+```
+
+## Brain verdict
+
+`scan` returns raw method results; the aggregated AI verdict is fetched
+separately by brain key.
+
+```rust
+// Fetch / poll by brain key
+let verdict = poh.get_brain_verdict("brain-key").await?;
+let verdict = poh.poll_brain_verdict("brain-key", Default::default()).await?; // BrainPollOptions
+
+// Scan + verdict in one call
+let sv = poh.scan_and_verdict("0xabc...", ScanOptions::default(), Default::default()).await?;
+println!("{:?} {:?}", sv.verdict.verdict, sv.verdict.confidence);
+```
+
+## Verification methods
+
+```rust
+let methods = poh.get_methods(None).await?;          // or Some("poh...") for wallet-specific
+let method  = poh.get_method("method-id").await?;
+```
+
 ## Natural language jobs
 
 Skill jobs always require a fee — set `budget`, `wallet_address`, and
@@ -56,6 +107,15 @@ let result = poh.ask_and_wait(
 
 println!("{:?}", result.output);
 if let Some(nl) = result.nl_response { println!("{nl}"); }
+```
+
+Or fire-and-poll manually:
+
+```rust
+let job_ref = poh.submit_job("...", AskOptions::new(0.5).wallet("poh...").private_key(pem)).await?;
+let status  = poh.get_job_status(&job_ref.job_id).await?;   // lightweight status check
+let result  = poh.get_job_result(&job_ref.job_id).await?;   // full result once done
+let result  = poh.poll_job_result(&job_ref.job_id, Default::default()).await?; // poll until done
 ```
 
 ## Compute jobs (your own model + dataset)
@@ -98,6 +158,9 @@ for entry in &history.entries {
     println!("{}: {} μPOH", entry.tx_hash, entry.delta);
 }
 
+// Raw transactions for an address (untyped JSON)
+let txs = poh.get_transactions("poh...").await?;
+
 // Pending mempool transactions
 let pending = poh.get_pending_transactions().await?;
 println!("{} pending txs", pending.count);
@@ -105,6 +168,9 @@ println!("{} pending txs", pending.count);
 // Miner info
 let info = poh.get_miner_info().await?;
 println!("{} reputation={}", info.model, info.reputation);
+
+// Basic node health / metadata
+let node = poh.get_node_info().await?;
 ```
 
 ## Signing & transactions
@@ -112,7 +178,7 @@ println!("{} reputation={}", info.model, info.reputation);
 Requires the `signing` feature:
 
 ```toml
-poh-sdk = { version = "0.3", features = ["signing"] }
+poh-sdk = { version = "0.5", features = ["signing"] }
 ```
 
 ```rust
@@ -133,6 +199,39 @@ println!("{}", result.tx_hash);
 
 // One-liner convenience (fetches nonce automatically)
 let result = poh.transfer(&kp.address, &recipient, 5.0, &kp.signing_private_key, 0, "").await?;
+```
+
+### Signing helpers
+
+```rust
+use poh_sdk::{
+    derive_address_from_signing_key, sign_data, create_rotation_proof,
+    compute_tx_hash, compute_tx_hash_with_currency,
+    compute_job_payment_hash, sign_job_payment, generate_job_id, decimals_of,
+};
+
+// Address derived from an SPKI PEM signing public key
+let addr = derive_address_from_signing_key(&kp.signing_public_key);
+
+// Sign an arbitrary UTF-8 message (base64 Ed25519 signature)
+let sig = sign_data("hello", &kp.signing_private_key)?;
+
+// Rotation proof — replace an already-registered key (signed with the OLD key)
+let proof = create_rotation_proof(&addr, &new_kp.signing_public_key, &old_private_key_pem)?;
+poh.register_key_pair(&new_kp, Some(&proof)).await?;
+
+// Canonical SHA-256 tx hash (currency-aware variant appends `currency` only when non-POH)
+let hash = compute_tx_hash(&from, &to, 5_000_000_000, 0, 42, timestamp_ms, "");
+let hash = compute_tx_hash_with_currency(&from, &to, 1250, 0, 42, timestamp_ms, "", Some("aiGEL"));
+
+// Job fee payment — hash binds the fee to one job + miner + amount + nonce
+let job_id = generate_job_id();          // "job-<millis>-<8 hex>"; fixed before signing
+let hash   = compute_job_payment_hash(&job_id, &me, &miner, 500, nonce);
+let (tx_hash, signature) = sign_job_payment(&job_id, &me, &miner, 500, nonce, &pem)?;
+// (used internally by submit_job / run_compute)
+
+// Decimals for an on-chain asset (9 for POH, 2 for the stablecoins)
+assert_eq!(decimals_of(Some("aiGEL")), 2);
 ```
 
 ## Skills
@@ -163,6 +262,26 @@ for item in &done.results {
 }
 ```
 
+## Chat crypto
+
+End-to-end encryption for chat payloads (X25519 + HKDF + AES-256-GCM),
+compatible with the node's envelope format. Requires the `chatcrypto` feature:
+
+```toml
+poh-sdk = { version = "0.5", features = ["chatcrypto"] }
+```
+
+```rust
+use poh_sdk::{derive_encryption_keypair, seal, open};
+
+// Deterministic X25519 keypair from a stable secret (e.g. the signing key)
+let kp = derive_encryption_keypair(stable_secret_bytes);
+
+// Encrypt for a recipient / decrypt an envelope
+let env       = seal(&recipient.public_key_b64, b"hello")?;   // SealedEnvelope
+let plaintext = open(&env, &kp.private_key_b64)?;
+```
+
 ## Error handling
 
 All methods return `poh_sdk::Result<T>` — `std::result::Result<T, PohError>`.
@@ -182,8 +301,9 @@ match poh.get_balance("poh...").await {
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `tokio` | ✓ | Enables polling helpers (`poll_job`, `scan_and_wait`, `ask_and_wait`) |
+| `tokio` | ✓ | Enables polling helpers (`poll_job`, `scan_and_wait`, `ask_and_wait`) and node discovery |
 | `signing` | — | Ed25519 keypair generation, transaction building and signing |
+| `chatcrypto` | — | X25519/HKDF/AES-GCM chat envelope encryption (`derive_encryption_keypair`, `seal`, `open`) |
 
 ## License
 

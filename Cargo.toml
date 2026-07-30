@@ -1,6 +1,6 @@
 [package]
 name        = "poh-sdk"
-version     = "0.4.2"
+version     = "0.5.0"
 edition     = "2021"
 description = "Proof of Human SDK — scan wallets, poll async jobs, access signal methods"
 license     = "MIT"
@@ -32,3 +32,7 @@ chatcrypto = ["dep:x25519-dalek", "dep:hkdf", "dep:aes-gcm", "dep:sha2", "dep:ba
 [dev-dependencies]
 tokio          = { version = "1", features = ["full"] }
 wiremock       = "0.6"
+
+[[test]]
+name = "client_test"
+required-features = ["signing"]
