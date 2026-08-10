@@ -170,10 +170,117 @@ impl AskOptions {
     }
 }
 
+/// Max attachment size accepted by the miner (1 MB).
+pub const MAX_ATTACHMENT_BYTES: usize = 1 * 1024 * 1024;
+
+/// One file attachment for chat/compute (≤1 MB on the miner).
+/// Prefer `data_url` for images and `content` for text.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAttachment {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
+}
+
+impl ChatAttachment {
+    pub fn text(name: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            mime: Some("text/plain".into()),
+            content: Some(content.into()),
+            content_base64: None,
+            data_url: None,
+        }
+    }
+
+    pub fn data_url(name: impl Into<String>, data_url: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            mime: None,
+            content: None,
+            content_base64: None,
+            data_url: Some(data_url.into()),
+        }
+    }
+}
+
+/// Options for free-form chat (`POST /chat/ask`).
+#[derive(Debug, Clone, Default)]
+pub struct ChatOptions {
+    pub history: Option<Vec<serde_json::Value>>,
+    pub model: Option<String>,
+    /// Private (default true): local LLM only.
+    pub private: bool,
+    pub attachments: Option<Vec<ChatAttachment>>,
+    /// Force a dataset after approving a 412 HF_DATASET_DOWNLOAD_REQUIRED.
+    pub dataset_id: Option<String>,
+    pub requester_address: Option<String>,
+}
+
+impl ChatOptions {
+    pub fn new() -> Self {
+        Self { private: true, ..Default::default() }
+    }
+
+    pub fn model(mut self, m: impl Into<String>) -> Self {
+        self.model = Some(m.into());
+        self
+    }
+
+    pub fn private(mut self, p: bool) -> Self {
+        self.private = p;
+        self
+    }
+
+    pub fn attachments(mut self, a: Vec<ChatAttachment>) -> Self {
+        self.attachments = Some(a);
+        self
+    }
+
+    pub fn dataset_id(mut self, id: impl Into<String>) -> Self {
+        self.dataset_id = Some(id.into());
+        self
+    }
+}
+
+/// Reply from [`crate::PohClient::chat`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatResult {
+    #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub message: String,
+    pub skill: Option<String>,
+    pub skill_id: Option<String>,
+    #[serde(default)]
+    pub cascade: bool,
+    #[serde(default)]
+    pub tasks: bool,
+    pub jobs: Option<serde_json::Value>,
+    pub dataset: Option<String>,
+    pub dataset_id: Option<String>,
+    #[serde(rename = "_fromPeer", default)]
+    pub from_peer: bool,
+    #[serde(rename = "_fromProvider")]
+    pub from_provider: Option<String>,
+    #[serde(default)]
+    pub from_chain_history: bool,
+    pub error: Option<String>,
+    pub code: Option<String>,
+}
+
 /// Options for submitting a paid compute job (user-specified model + dataset).
 #[derive(Debug, Clone)]
 pub struct ComputeOptions {
-    /// Which model to run, e.g. "qwen2.5:1.5b", "llama3.1:8b".
+    /// Which model to run, e.g. "qwen3-1.7b", "qwen3vl-2b".
     pub model: String,
     /// Optional Hugging Face dataset id to ground the answer in (must be installed on the node).
     pub dataset: Option<String>,
@@ -185,6 +292,10 @@ pub struct ComputeOptions {
     pub private_key_pem: String,
     /// Optional explicit job id. Auto-generated if omitted.
     pub job_id: Option<String>,
+    pub history: Option<Vec<serde_json::Value>>,
+    pub attachments: Option<Vec<ChatAttachment>>,
+    /// When `Some(false)`, skip skill/task-cascade auto-routing on the miner.
+    pub route: Option<bool>,
 }
 
 impl ComputeOptions {
@@ -201,6 +312,9 @@ impl ComputeOptions {
             wallet_address: wallet_address.into(),
             private_key_pem: private_key_pem.into(),
             job_id: None,
+            history: None,
+            attachments: None,
+            route: None,
         }
     }
 
@@ -208,6 +322,32 @@ impl ComputeOptions {
         self.dataset = Some(dataset.into());
         self
     }
+
+    pub fn attachments(mut self, a: Vec<ChatAttachment>) -> Self {
+        self.attachments = Some(a);
+        self
+    }
+
+    pub fn route(mut self, route: bool) -> Self {
+        self.route = Some(route);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HfDatasetListResult {
+    #[serde(default)]
+    pub datasets: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatusResult {
+    #[serde(default)]
+    pub servers: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub tools: Vec<serde_json::Value>,
 }
 
 /// Reference returned immediately after submitting a job.
@@ -247,6 +387,7 @@ pub struct AskJobResultRaw {
 #[serde(rename_all = "camelCase")]
 pub struct AskJobProfile {
     pub skill_output: Option<serde_json::Value>,
+    pub compute_output: Option<serde_json::Value>,
     pub nl_response: Option<String>,
     pub skill_id: Option<String>,
     pub tokens_used: Option<u32>,
@@ -257,7 +398,7 @@ pub struct AskJobProfile {
 pub struct AskJobResult {
     pub job_id: String,
     pub status: String,
-    /// Raw skill output. Shape is skill-dependent.
+    /// Raw skill or compute output. Shape is skill-dependent.
     pub output: Option<serde_json::Value>,
     /// Natural language answer generated by the miner's LLM.
     /// Present when the job payload included a `question` field.
@@ -269,12 +410,25 @@ pub struct AskJobResult {
 
 impl From<AskJobResultRaw> for AskJobResult {
     fn from(r: AskJobResultRaw) -> Self {
+        let profile = r.profile.as_ref();
+        let output = profile
+            .and_then(|p| p.skill_output.clone())
+            .or_else(|| profile.and_then(|p| p.compute_output.clone()));
+        let nl = profile
+            .and_then(|p| p.nl_response.clone())
+            .or_else(|| {
+                profile.and_then(|p| {
+                    p.compute_output
+                        .as_ref()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                })
+            });
         Self {
-            status:      r.status.unwrap_or_else(|| "done".to_owned()),
-            output:      r.profile.as_ref().and_then(|p| p.skill_output.clone()),
-            nl_response: r.profile.as_ref().and_then(|p| p.nl_response.clone()),
-            skill_id:    r.profile.as_ref().and_then(|p| p.skill_id.clone()),
-            tokens_used: r.profile.as_ref().and_then(|p| p.tokens_used),
+            status:      r.status.unwrap_or_else(|| if r.error.is_some() { "error".into() } else { "done".into() }),
+            output,
+            nl_response: nl,
+            skill_id:    profile.and_then(|p| p.skill_id.clone()),
+            tokens_used: profile.and_then(|p| p.tokens_used),
             error:       r.error,
             job_id:      r.job_id,
         }

@@ -280,10 +280,11 @@ impl PohClient {
         if Self::is_loopback(&remote) {
             return Ok(remote);
         }
-        Err(PohError::Api {
-            status: 403,
-            message: "This operation requires a local miner node. Set local_base_url in PohClientOptions.".into(),
-        })
+        Err(PohError::api(
+            403,
+            "This operation requires a local miner node. Set local_base_url in PohClientOptions.",
+            None,
+        ))
     }
 
     // ── Request helper ────────────────────────────────────────────────────────
@@ -301,13 +302,14 @@ impl PohClient {
     async fn send<T: serde::de::DeserializeOwned>(&self, rb: RequestBuilder) -> Result<T> {
         let res = rb.send().await?;
         if !res.status().is_success() {
-            let status  = res.status().as_u16();
-            let body    = res.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
+            let status = res.status().as_u16();
+            let text   = res.text().await.unwrap_or_default();
+            let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+            let message = parsed
+                .as_ref()
                 .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
-                .unwrap_or(body);
-            return Err(PohError::Api { status, message });
+                .unwrap_or(text);
+            return Err(PohError::api(status, message, parsed));
         }
         Ok(res.json::<T>().await?)
     }
@@ -492,7 +494,13 @@ impl PohClient {
             self.req(reqwest::Method::POST, "/chat/route").await?.json(&route_body)
         ).await?;
 
-        if route.get("type").and_then(|v| v.as_str()) != Some("skill") {
+        let rtype = route.get("type").and_then(|v| v.as_str()).unwrap_or("chat");
+        if matches!(rtype, "cascade" | "tasks" | "dataset" | "hf-model" | "sequence") {
+            return Err(PohError::InvalidArgument(format!(
+                "Route type \"{rtype}\" is free (task cascade / dataset / media). Use chat() instead of submit_job()."
+            )));
+        }
+        if rtype != "skill" {
             let reason = route.get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("No skill matched the question");
@@ -573,6 +581,11 @@ impl PohClient {
                 "run_compute: budget must be > 0 — compute jobs always require a fee".into()
             ));
         }
+        if prompt.is_empty() && opts.attachments.as_ref().map(|a| a.is_empty()).unwrap_or(true) {
+            return Err(PohError::InvalidArgument(
+                "run_compute: prompt or attachments required".into(),
+            ));
+        }
         let max_budget = (opts.budget * 1_000_000_000.0) as i64;
         let job_id = opts.job_id.clone().unwrap_or_else(crate::signing::generate_job_id);
 
@@ -583,18 +596,111 @@ impl PohClient {
             max_budget, nonce_info.nonce, &opts.private_key_pem,
         ).map_err(|e| PohError::InvalidArgument(e.to_string()))?;
 
-        let job_body = serde_json::json!({
+        let mut payload = serde_json::json!({
+            "prompt": if prompt.is_empty() { "Please analyze the attached file(s)." } else { prompt },
+        });
+        if let Some(h) = &opts.history {
+            payload["history"] = serde_json::Value::Array(h.clone());
+        }
+        if let Some(a) = &opts.attachments {
+            payload["attachments"] = serde_json::to_value(a)
+                .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        }
+        if opts.route == Some(false) {
+            payload["route"] = serde_json::Value::Bool(false);
+        }
+
+        let mut job_body = serde_json::json!({
             "id":               job_id,
             "type":             "compute",
             "model":            opts.model,
             "dataset":          opts.dataset,
-            "payload":          { "prompt": prompt },
+            "payload":          payload,
             "maxBudget":        max_budget,
             "requesterAddress": opts.wallet_address,
             "paymentTx":        { "txHash": tx_hash, "signature": signature },
         });
+        if opts.route == Some(false) {
+            job_body["route"] = serde_json::Value::Bool(false);
+        }
 
         self.send(self.req(reqwest::Method::POST, "/job").await?.json(&job_body)).await
+    }
+
+    /// Free-form chat via `POST /chat/ask` (no fee). Runs task cascade when needed.
+    /// Attachments ≤1 MB: text inlined, images use a vision model path.
+    ///
+    /// On HTTP 412 with `code: HF_DATASET_DOWNLOAD_REQUIRED`, returns
+    /// [`PohError::Api`] whose `body` contains `datasetId` — call
+    /// [`download_dataset`] then retry with [`ChatOptions::dataset_id`].
+    pub async fn chat(&self, message: &str, opts: ChatOptions) -> Result<ChatResult> {
+        if message.is_empty() && opts.attachments.as_ref().map(|a| a.is_empty()).unwrap_or(true) {
+            return Err(PohError::InvalidArgument(
+                "chat: message or attachments required".into(),
+            ));
+        }
+        let mut body = serde_json::json!({
+            "message": if message.is_empty() { "Please analyze the attached file(s)." } else { message },
+            "history": opts.history.clone().unwrap_or_default(),
+            "private": opts.private,
+        });
+        if let Some(m) = &opts.model {
+            body["model"] = serde_json::Value::String(m.clone());
+        }
+        if let Some(a) = &opts.attachments {
+            body["attachments"] = serde_json::to_value(a)
+                .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        }
+        if let Some(id) = &opts.dataset_id {
+            body["datasetId"] = serde_json::Value::String(id.clone());
+        }
+        let req_addr = opts
+            .requester_address
+            .as_deref()
+            .or(self.opts.wallet_address.as_deref());
+        if let Some(addr) = req_addr {
+            body["requesterAddress"] = serde_json::Value::String(addr.to_owned());
+        }
+        self.send(self.req(reqwest::Method::POST, "/chat/ask").await?.json(&body))
+            .await
+    }
+
+    /// List Hugging Face datasets installed on the miner.
+    pub async fn list_datasets(&self) -> Result<HfDatasetListResult> {
+        self.send(self.req(reqwest::Method::GET, "/api/hf-dataset").await?)
+            .await
+    }
+
+    /// Download + install a Hugging Face dataset on the miner (row-capped).
+    pub async fn download_dataset(&self, dataset_id: &str) -> Result<serde_json::Value> {
+        if dataset_id.is_empty() {
+            return Err(PohError::InvalidArgument(
+                "download_dataset: dataset_id required".into(),
+            ));
+        }
+        let path = format!(
+            "/api/hf-dataset/{}/download",
+            urlencoding::encode(dataset_id)
+        );
+        self.send(self.req(reqwest::Method::POST, &path).await?).await
+    }
+
+    /// Remove an installed HF dataset from the miner.
+    pub async fn delete_dataset(&self, dataset_id: &str) -> Result<serde_json::Value> {
+        if dataset_id.is_empty() {
+            return Err(PohError::InvalidArgument(
+                "delete_dataset: dataset_id required".into(),
+            ));
+        }
+        let path = format!("/api/hf-dataset/{}", urlencoding::encode(dataset_id));
+        self.send(self.req(reqwest::Method::DELETE, &path).await?)
+            .await
+    }
+
+    /// Status of configured MCP servers and their tools.
+    pub async fn get_mcp_status(&self) -> Result<McpStatusResult> {
+        self.send(self.req(reqwest::Method::GET, "/api/mcp/status").await?)
+            .await
     }
 
     /// Fetch the current status of a natural language job (without the full result).
