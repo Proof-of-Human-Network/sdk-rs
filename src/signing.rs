@@ -5,7 +5,7 @@ use ed25519_dalek::{pkcs8::DecodePrivateKey, SigningKey, Signer};
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 
-use crate::types::{KeyPair, PohTx};
+use crate::types::{KeyPair, DAITx};
 
 // ── DER prefixes for Ed25519 PEM ──────────────────────────────────────────────
 //
@@ -55,10 +55,10 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 // ── Key generation ─────────────────────────────────────────────────────────
 
-/// Derive the canonical poh address bound to an ed25519 SPKI PEM public key.
+/// Derive the canonical dai address bound to an ed25519 SPKI PEM public key.
 pub fn derive_address_from_signing_key(signing_public_key: &str) -> String {
     let digest = Sha256::digest(signing_public_key.as_bytes());
-    format!("poh{}", bytes_to_hex(&digest)[..40].to_string())
+    format!("dai{}", bytes_to_hex(&digest)[..40].to_string())
 }
 
 /// Generate a fresh Ed25519 [`KeyPair`] (PKCS8 PEM private, SPKI PEM public).
@@ -112,12 +112,12 @@ pub fn compute_tx_hash(from: &str, to: &str, amount: i64, fee: i64, nonce: i64, 
 }
 
 /// Currency-aware tx hash. LOCKSTEP with the node: `currency` joins the
-/// preimage after `memo` ONLY when non-POH — a POH tx hashes byte-identically
+/// preimage after `memo` ONLY when non-DAI — a DAI tx hashes byte-identically
 /// to the historical shape.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_tx_hash_with_currency(from: &str, to: &str, amount: i64, fee: i64, nonce: i64, timestamp: i64, memo: &str, currency: Option<&str>) -> String {
     let currency_part = match currency {
-        Some(c) if c != "POH" => format!(r#","currency":{}"#, serde_json::to_string(c).unwrap()),
+        Some(c) if c != "DAI" => format!(r#","currency":{}"#, serde_json::to_string(c).unwrap()),
         _ => String::new(),
     };
     let canonical = format!(
@@ -173,7 +173,7 @@ pub fn compute_job_payment_hash(
 }
 
 /// Currency-aware job payment hash. LOCKSTEP with the node: `currency` is the
-/// SIXTH key ONLY when non-POH.
+/// SIXTH key ONLY when non-DAI.
 pub fn compute_job_payment_hash_with_currency(
     job_id: &str,
     requester_address: &str,
@@ -183,7 +183,7 @@ pub fn compute_job_payment_hash_with_currency(
     currency: Option<&str>,
 ) -> String {
     let currency_part = match currency {
-        Some(c) if c != "POH" => format!(r#","currency":{}"#, serde_json::to_string(c).unwrap()),
+        Some(c) if c != "DAI" => format!(r#","currency":{}"#, serde_json::to_string(c).unwrap()),
         _ => String::new(),
     };
     let canonical = format!(
@@ -217,16 +217,16 @@ pub fn sign_job_payment(
 
 // ── Transaction building ──────────────────────────────────────────────────
 
-/// Build an unsigned [`PohTx`]. `amount_poh` is in whole POH (1 POH = 1e9 μPOH).
-pub fn build_transfer(from: &str, to: &str, amount_poh: f64, nonce: i64, fee: i64, memo: &str) -> Result<PohTx, Box<dyn std::error::Error>> {
-    if amount_poh <= 0.0 {
-        return Err("amount_poh must be positive".into());
+/// Build an unsigned [`DAITx`]. `amount_dai` is in whole DAI (1 DAI = 1e9 μDAI).
+pub fn build_transfer(from: &str, to: &str, amount_dai: f64, nonce: i64, fee: i64, memo: &str) -> Result<DAITx, Box<dyn std::error::Error>> {
+    if amount_dai <= 0.0 {
+        return Err("amount_dai must be positive".into());
     }
-    let amount = (amount_poh * 1_000_000_000.0).round() as i64;
+    let amount = (amount_dai * 1_000_000_000.0).round() as i64;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as i64;
-    Ok(PohTx {
+    Ok(DAITx {
         from: from.to_owned(), to: to.to_owned(),
         amount, fee, nonce, timestamp,
         memo: memo.to_owned(),
@@ -235,18 +235,18 @@ pub fn build_transfer(from: &str, to: &str, amount_poh: f64, nonce: i64, fee: i6
     })
 }
 
-/// Build an unsigned [`PohTx`] denominated in a stablecoin. `amount` is in the
+/// Build an unsigned [`DAITx`] denominated in a stablecoin. `amount` is in the
 /// asset's DISPLAY units (e.g. 12.50 aiGEL → 1250 raw at 2 decimals).
-pub fn build_transfer_with_currency(from: &str, to: &str, amount_display: f64, nonce: i64, fee: i64, memo: &str, currency: &str) -> Result<PohTx, Box<dyn std::error::Error>> {
+pub fn build_transfer_with_currency(from: &str, to: &str, amount_display: f64, nonce: i64, fee: i64, memo: &str, currency: &str) -> Result<DAITx, Box<dyn std::error::Error>> {
     if amount_display <= 0.0 {
         return Err("amount must be positive".into());
     }
-    let cur = if currency == "POH" { None } else { Some(currency.to_owned()) };
+    let cur = if currency == "DAI" { None } else { Some(currency.to_owned()) };
     let amount = (amount_display * 10f64.powi(decimals_of(cur.as_deref()) as i32)).round() as i64;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as i64;
-    Ok(PohTx {
+    Ok(DAITx {
         from: from.to_owned(), to: to.to_owned(),
         amount, fee, nonce, timestamp,
         memo: memo.to_owned(),
@@ -257,8 +257,8 @@ pub fn build_transfer_with_currency(from: &str, to: &str, amount_display: f64, n
 
 // ── Transaction signing ───────────────────────────────────────────────────
 
-/// Sign a [`PohTx`], filling in `tx_hash`, `signature`, and `signing_public_key`.
-pub fn sign_transaction(tx: &PohTx, private_key_pem: &str) -> Result<PohTx, Box<dyn std::error::Error>> {
+/// Sign a [`DAITx`], filling in `tx_hash`, `signature`, and `signing_public_key`.
+pub fn sign_transaction(tx: &DAITx, private_key_pem: &str) -> Result<DAITx, Box<dyn std::error::Error>> {
     let signing_key = SigningKey::from_pkcs8_pem(private_key_pem)
         .map_err(|e| format!("failed to decode PKCS8 PEM: {e}"))?;
 
@@ -267,7 +267,7 @@ pub fn sign_transaction(tx: &PohTx, private_key_pem: &str) -> Result<PohTx, Box<
     let signature_b64 = B64.encode(signature.to_bytes());
     let public_pem = public_key_to_pem(&signing_key.verifying_key());
 
-    Ok(PohTx {
+    Ok(DAITx {
         tx_hash: Some(tx_hash),
         signature: Some(signature_b64),
         signing_public_key: Some(public_pem),
@@ -290,7 +290,7 @@ mod tests {
         let kp = generate_key_pair().unwrap();
         assert!(kp.signing_private_key.contains("-----BEGIN PRIVATE KEY-----"));
         assert!(kp.signing_public_key.contains("-----BEGIN PUBLIC KEY-----"));
-        assert!(kp.address.starts_with("poh"));
+        assert!(kp.address.starts_with("dai"));
         assert_eq!(kp.address, derive_address_from_signing_key(&kp.signing_public_key));
     }
 
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn create_signing_proof_equals_sign_data_of_address() {
         let kp = generate_key_pair().unwrap();
-        let addr = "poh_test_address";
+        let addr = "dai_test_address";
         assert_eq!(
             create_signing_proof(addr, &kp.signing_private_key).unwrap(),
             sign_data(addr, &kp.signing_private_key).unwrap()
@@ -348,22 +348,22 @@ mod tests {
 
     #[test]
     fn compute_tx_hash_returns_64_char_hex() {
-        let h = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h = compute_tx_hash("daiA", "daiB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn compute_tx_hash_is_deterministic() {
-        let h1 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
-        let h2 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h1 = compute_tx_hash("daiA", "daiB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h2 = compute_tx_hash("daiA", "daiB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn compute_tx_hash_differs_for_different_amounts() {
-        let h1 = compute_tx_hash("pohA", "pohB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
-        let h2 = compute_tx_hash("pohA", "pohB", 2_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h1 = compute_tx_hash("daiA", "daiB", 1_000_000_000, 0, 1, 1_700_000_000_000, "");
+        let h2 = compute_tx_hash("daiA", "daiB", 2_000_000_000, 0, 1, 1_700_000_000_000, "");
         assert_ne!(h1, h2);
     }
 
@@ -374,7 +374,7 @@ mod tests {
     /// built by this crate would be silently rejected.
     #[test]
     fn compute_tx_hash_matches_node_reference_value() {
-        let h = compute_tx_hash("pohA", "pohB", 1_000_000_000, 5, 3, 1_700_000_000_000, "hello");
+        let h = compute_tx_hash("daiA", "daiB", 1_000_000_000, 5, 3, 1_700_000_000_000, "hello");
         assert_eq!(h, "e309a41e0c088876f2763f8d01ae434ff060bd4391202d555be1d96ee0f14c8a");
     }
 
@@ -382,15 +382,15 @@ mod tests {
 
     #[test]
     fn compute_job_payment_hash_returns_64_char_hex() {
-        let h = compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0);
+        let h = compute_job_payment_hash("job-1", "daiA", "daiMiner", 500_000_000, 0);
         assert_eq!(h.len(), 64);
         assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
     fn compute_job_payment_hash_is_deterministic() {
-        let h1 = compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0);
-        let h2 = compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0);
+        let h1 = compute_job_payment_hash("job-1", "daiA", "daiMiner", 500_000_000, 0);
+        let h2 = compute_job_payment_hash("job-1", "daiA", "daiMiner", 500_000_000, 0);
         assert_eq!(h1, h2);
     }
 
@@ -401,7 +401,7 @@ mod tests {
     /// the JS, Python, iOS, and Android SDKs.
     #[test]
     fn compute_job_payment_hash_matches_node_reference_value() {
-        let h = compute_job_payment_hash("job-abc", "pohAlice", "pohMiner", 500_000_000, 3);
+        let h = compute_job_payment_hash("job-abc", "daiAlice", "daiMiner", 500_000_000, 3);
         assert_eq!(h, "1ed86280c1ab64d60d55a232a1c339299d32d8bd45e5f2bf26ff72b26d8908c0");
     }
 
@@ -409,27 +409,27 @@ mod tests {
     fn sign_job_payment_returns_tx_hash_and_signature() {
         let kp = generate_key_pair().unwrap();
         let (tx_hash, signature) = sign_job_payment(
-            "job-1", "pohA", "pohMiner", 500_000_000, 0, &kp.signing_private_key,
+            "job-1", "daiA", "daiMiner", 500_000_000, 0, &kp.signing_private_key,
         ).unwrap();
-        assert_eq!(tx_hash, compute_job_payment_hash("job-1", "pohA", "pohMiner", 500_000_000, 0));
+        assert_eq!(tx_hash, compute_job_payment_hash("job-1", "daiA", "daiMiner", 500_000_000, 0));
         assert!(!signature.is_empty());
     }
 
     #[test]
-    fn build_transfer_converts_poh_to_μpoh() {
-        let tx = build_transfer("pohA", "pohB", 1.5, 3, 0, "").unwrap();
+    fn build_transfer_converts_dai_to_μdai() {
+        let tx = build_transfer("daiA", "daiB", 1.5, 3, 0, "").unwrap();
         assert_eq!(tx.amount, 1_500_000_000);
     }
 
     #[test]
     fn build_transfer_rejects_zero_amount() {
-        assert!(build_transfer("pohA", "pohB", 0.0, 1, 0, "").is_err());
+        assert!(build_transfer("daiA", "daiB", 0.0, 1, 0, "").is_err());
     }
 
     #[test]
     fn sign_transaction_fills_in_signing_fields() {
         let kp = generate_key_pair().unwrap();
-        let tx = build_transfer("pohA", "pohB", 2.0, 1, 0, "").unwrap();
+        let tx = build_transfer("daiA", "daiB", 2.0, 1, 0, "").unwrap();
         let signed = sign_transaction(&tx, &kp.signing_private_key).unwrap();
         assert!(signed.tx_hash.is_some());
         assert!(signed.signature.is_some());
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn sign_transaction_preserves_original_fields() {
         let kp = generate_key_pair().unwrap();
-        let tx = build_transfer("pohA", "pohB", 3.0, 7, 500, "hello").unwrap();
+        let tx = build_transfer("daiA", "daiB", 3.0, 7, 500, "hello").unwrap();
         let signed = sign_transaction(&tx, &kp.signing_private_key).unwrap();
         assert_eq!(signed.from, tx.from);
         assert_eq!(signed.to, tx.to);
@@ -451,7 +451,7 @@ mod tests {
     fn sign_transaction_signature_verifies() {
         use ed25519_dalek::Signature;
         let kp = generate_key_pair().unwrap();
-        let tx = build_transfer("pohA", "pohB", 1.0, 1, 0, "").unwrap();
+        let tx = build_transfer("daiA", "daiB", 1.0, 1, 0, "").unwrap();
         let signed = sign_transaction(&tx, &kp.signing_private_key).unwrap();
         let sig_bytes = B64.decode(signed.signature.as_ref().unwrap()).unwrap();
         let vk = VerifyingKey::from_public_key_pem(signed.signing_public_key.as_ref().unwrap()).unwrap();

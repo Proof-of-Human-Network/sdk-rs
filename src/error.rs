@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum PohError {
+pub enum DAIError {
     /// HTTP non-2xx. `body` is the parsed JSON object when available
     /// (e.g. 412 `HF_DATASET_DOWNLOAD_REQUIRED` with `datasetId`).
     #[error("HTTP {status}: {message}")]
@@ -23,11 +23,11 @@ pub enum PohError {
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
-    #[error("No POH node available — all candidates failed to respond")]
+    #[error("No DAI node available — all candidates failed to respond")]
     NoNodeAvailable,
 }
 
-impl PohError {
+impl DAIError {
     pub fn api(status: u16, message: impl Into<String>, body: Option<serde_json::Value>) -> Self {
         Self::Api {
             status,
@@ -37,4 +37,4 @@ impl PohError {
     }
 }
 
-pub type Result<T> = std::result::Result<T, PohError>;
+pub type Result<T> = std::result::Result<T, DAIError>;

@@ -1,4 +1,4 @@
-//! chat-crypto — portable public-job chat encryption for the POH Rust SDK.
+//! chat-crypto — portable public-job chat encryption for the DAI Rust SDK.
 //!
 //! Public compute jobs are raced by miners the requester doesn't control, so the
 //! on-chain record of the prompt/reply is sealed to the requester's X25519 key:
@@ -7,7 +7,7 @@
 //! X25519 (ECDH) -> HKDF-SHA256 -> AES-256-GCM
 //! ```
 //!
-//! Byte-identical to the node reference (poh-miner `src/security/chat-crypto.js`,
+//! Byte-identical to the node reference (dai-miner `src/security/chat-crypto.js`,
 //! verified round-trip) and the JS/Python SDKs. See CHAT-CRYPTO.md for the wire format.
 //!
 //! Enable with the `chatcrypto` feature.
@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-const SEAL_INFO: &[u8] = b"poh-chat-seal-v1";
-const SCALAR_INFO: &[u8] = b"poh-x25519-v1";
+const SEAL_INFO: &[u8] = b"dai-chat-seal-v1";
+const SCALAR_INFO: &[u8] = b"dai-x25519-v1";
 
 /// A sealed chat envelope (all fields base64).
 #[derive(Debug, Clone, Serialize, Deserialize)]

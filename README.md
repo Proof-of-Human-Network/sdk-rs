@@ -1,6 +1,6 @@
 # poh-sdk
 
-Rust SDK for the [Proof of Human](https://proofofhuman.ge) network.
+Rust SDK for the [Decentralized Artificial Intelligence](https://iamai.kg) network.
 
 ## Add to your project
 
@@ -16,16 +16,16 @@ poh-sdk = { version = "0.5", features = ["signing"] }
 ## Quick start
 
 ```rust
-use poh_sdk::{PohClient, PohClientOptions, ScanOptions};
+use poh_sdk::{DAIClient, DAIClientOptions, ScanOptions};
 
 #[tokio::main]
 async fn main() -> poh_sdk::Result<()> {
-    let poh = PohClient::new(
-        PohClientOptions::new("https://miner.poh.ge")
+    let dai = DAIClient::new(
+        DAIClientOptions::new("https://miner.iamai.kg")
             .api_key("your-api-key"),
     );
 
-    let res = poh.scan("0xabc...", ScanOptions::default()).await?;
+    let res = dai.scan("0xabc...", ScanOptions::default()).await?;
     match res.result {
         Some(true)  => println!("Human"),
         Some(false) => println!("Bot"),
@@ -38,17 +38,17 @@ async fn main() -> poh_sdk::Result<()> {
 ## Multi-node failover
 
 The client can probe a list of nodes and use the first one that responds.
-`PohClientOptions::default()` uses the built-in default node list.
+`DAIClientOptions::default()` uses the built-in default node list.
 
 ```rust
-let poh = PohClient::new(PohClientOptions::with_nodes([
-    "https://miner.poh.ge",
-    "https://proofofhuman.ge",
-    "https://poh.assetux.com",
+let dai = DAIClient::new(DAIClientOptions::with_nodes([
+    "https://miner.iamai.kg",
+    "https://iamai.kg",
+    "https://miner.iamai.kg",
 ]));
 
 // Which node was selected (None before the first request)?
-println!("{:?}", poh.active_node());
+println!("{:?}", dai.active_node());
 ```
 
 ## Local miner routing
@@ -59,8 +59,8 @@ still hit the public nodes; without it, writes to a non-loopback node fail with
 a 403 explaining the requirement.
 
 ```rust
-let poh = PohClient::new(
-    PohClientOptions::default().local_base_url("http://127.0.0.1:3456"),
+let dai = DAIClient::new(
+    DAIClientOptions::default().local_base_url("http://127.0.0.1:3456"),
 );
 ```
 
@@ -71,19 +71,19 @@ separately by brain key.
 
 ```rust
 // Fetch / poll by brain key
-let verdict = poh.get_brain_verdict("brain-key").await?;
-let verdict = poh.poll_brain_verdict("brain-key", Default::default()).await?; // BrainPollOptions
+let verdict = dai.get_brain_verdict("brain-key").await?;
+let verdict = dai.poll_brain_verdict("brain-key", Default::default()).await?; // BrainPollOptions
 
 // Scan + verdict in one call
-let sv = poh.scan_and_verdict("0xabc...", ScanOptions::default(), Default::default()).await?;
+let sv = dai.scan_and_verdict("0xabc...", ScanOptions::default(), Default::default()).await?;
 println!("{:?} {:?}", sv.verdict.verdict, sv.verdict.confidence);
 ```
 
 ## Verification methods
 
 ```rust
-let methods = poh.get_methods(None).await?;          // or Some("poh...") for wallet-specific
-let method  = poh.get_method("method-id").await?;
+let methods = dai.get_methods(None).await?;          // or Some("dai...") for wallet-specific
+let method  = dai.get_method("method-id").await?;
 ```
 
 ## Natural language jobs
@@ -95,13 +95,13 @@ before it will run the job at all; it rejects the request outright (no job
 ever runs) without a valid signed payment.
 
 ```rust
-use poh_sdk::{PohClient, PohClientOptions, AskOptions};
+use poh_sdk::{DAIClient, DAIClientOptions, AskOptions};
 
-let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
+let dai = DAIClient::new(DAIClientOptions::new("https://iamai.kg"));
 
-let result = poh.ask_and_wait(
+let result = dai.ask_and_wait(
     "What does vitalik.eth write about on Paragraph?",
-    AskOptions::new(0.5).wallet("poh...").private_key(my_private_key_pem),
+    AskOptions::new(0.5).wallet("dai...").private_key(my_private_key_pem),
     Default::default(),
 ).await?;
 
@@ -112,10 +112,10 @@ if let Some(nl) = result.nl_response { println!("{nl}"); }
 Or fire-and-poll manually:
 
 ```rust
-let job_ref = poh.submit_job("...", AskOptions::new(0.5).wallet("poh...").private_key(pem)).await?;
-let status  = poh.get_job_status(&job_ref.job_id).await?;   // lightweight status check
-let result  = poh.get_job_result(&job_ref.job_id).await?;   // full result once done
-let result  = poh.poll_job_result(&job_ref.job_id, Default::default()).await?; // poll until done
+let job_ref = dai.submit_job("...", AskOptions::new(0.5).wallet("dai...").private_key(pem)).await?;
+let status  = dai.get_job_status(&job_ref.job_id).await?;   // lightweight status check
+let result  = dai.get_job_result(&job_ref.job_id).await?;   // full result once done
+let result  = dai.poll_job_result(&job_ref.job_id, Default::default()).await?; // poll until done
 ```
 
 ## Compute jobs (your own model + dataset)
@@ -126,15 +126,15 @@ never free — `run_compute` always signs a fee payment. Requires the `signing`
 feature.
 
 ```rust
-use poh_sdk::{PohClient, PohClientOptions, ComputeOptions};
+use poh_sdk::{DAIClient, DAIClientOptions, ComputeOptions};
 
-let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
+let dai = DAIClient::new(DAIClientOptions::new("https://iamai.kg"));
 
-let opts = ComputeOptions::new("llama3.1:8b", 0.5, "poh...", my_private_key_pem)
+let opts = ComputeOptions::new("llama3.1:8b", 0.5, "dai...", my_private_key_pem)
     .dataset("some-org/some-dataset"); // optional
 
-let job_ref = poh.run_compute("Summarize the top 5 rows", opts).await?;
-let result  = poh.poll_job_result(&job_ref.job_id, Default::default()).await?;
+let job_ref = dai.run_compute("Summarize the top 5 rows", opts).await?;
+let result  = dai.poll_job_result(&job_ref.job_id, Default::default()).await?;
 println!("{:?}", result.output);
 ```
 
@@ -145,32 +145,32 @@ verify a signature for a key it has never seen.
 ## Wallet / blockchain
 
 ```rust
-// Balance (μPOH — divide by 1e9 for POH)
-let bal = poh.get_balance("poh...").await?;
-println!("{} μPOH", bal.balance);
+// Balance (μDAI — divide by 1e9 for DAI)
+let bal = dai.get_balance("dai...").await?;
+println!("{} μDAI", bal.balance);
 
 // Nonce (needed before building a transaction)
-let nonce = poh.get_nonce("poh...").await?;
+let nonce = dai.get_nonce("dai...").await?;
 
 // Transaction history
-let history = poh.get_transaction_history("poh...", 50).await?;
+let history = dai.get_transaction_history("dai...", 50).await?;
 for entry in &history.entries {
-    println!("{}: {} μPOH", entry.tx_hash, entry.delta);
+    println!("{}: {} μDAI", entry.tx_hash, entry.delta);
 }
 
 // Raw transactions for an address (untyped JSON)
-let txs = poh.get_transactions("poh...").await?;
+let txs = dai.get_transactions("dai...").await?;
 
 // Pending mempool transactions
-let pending = poh.get_pending_transactions().await?;
+let pending = dai.get_pending_transactions().await?;
 println!("{} pending txs", pending.count);
 
 // Miner info
-let info = poh.get_miner_info().await?;
+let info = dai.get_miner_info().await?;
 println!("{} reputation={}", info.model, info.reputation);
 
 // Basic node health / metadata
-let node = poh.get_node_info().await?;
+let node = dai.get_node_info().await?;
 ```
 
 ## Signing & transactions
@@ -188,17 +188,17 @@ use poh_sdk::{generate_key_pair, build_transfer, sign_transaction, create_signin
 let kp = generate_key_pair()?;
 
 // 2. Register with your local node (one-time, per node)
-poh.register_key_pair(&kp, None).await?;
+dai.register_key_pair(&kp, None).await?;
 
 // 3. Build, sign, and submit a transfer
-let nonce_resp = poh.get_nonce(&kp.address).await?;
+let nonce_resp = dai.get_nonce(&kp.address).await?;
 let tx     = build_transfer(&kp.address, &recipient, 5.0, nonce_resp.nonce + 1, 0, "")?;
 let signed = sign_transaction(&tx, &kp.signing_private_key)?;
-let result = poh.submit_transaction(&signed).await?;
+let result = dai.submit_transaction(&signed).await?;
 println!("{}", result.tx_hash);
 
 // One-liner convenience (fetches nonce automatically)
-let result = poh.transfer(&kp.address, &recipient, 5.0, &kp.signing_private_key, 0, "").await?;
+let result = dai.transfer(&kp.address, &recipient, 5.0, &kp.signing_private_key, 0, "").await?;
 ```
 
 ### Signing helpers
@@ -218,9 +218,9 @@ let sig = sign_data("hello", &kp.signing_private_key)?;
 
 // Rotation proof — replace an already-registered key (signed with the OLD key)
 let proof = create_rotation_proof(&addr, &new_kp.signing_public_key, &old_private_key_pem)?;
-poh.register_key_pair(&new_kp, Some(&proof)).await?;
+dai.register_key_pair(&new_kp, Some(&proof)).await?;
 
-// Canonical SHA-256 tx hash (currency-aware variant appends `currency` only when non-POH)
+// Canonical SHA-256 tx hash (currency-aware variant appends `currency` only when non-DAI)
 let hash = compute_tx_hash(&from, &to, 5_000_000_000, 0, 42, timestamp_ms, "");
 let hash = compute_tx_hash_with_currency(&from, &to, 1250, 0, 42, timestamp_ms, "", Some("aiGEL"));
 
@@ -230,14 +230,14 @@ let hash   = compute_job_payment_hash(&job_id, &me, &miner, 500, nonce);
 let (tx_hash, signature) = sign_job_payment(&job_id, &me, &miner, 500, nonce, &pem)?;
 // (used internally by submit_job / run_compute)
 
-// Decimals for an on-chain asset (9 for POH, 2 for the stablecoins)
+// Decimals for an on-chain asset (9 for DAI, 2 for the stablecoins)
 assert_eq!(decimals_of(Some("aiGEL")), 2);
 ```
 
 ## Skills
 
 ```rust
-let skills = poh.list_skills().await?;
+let skills = dai.list_skills().await?;
 for skill in &skills {
     println!("{} — {:?}", skill.id, skill.description);
 }
@@ -248,7 +248,7 @@ for skill in &skills {
 ```rust
 use poh_sdk::PollOptions;
 
-let done = poh.scan_and_wait(
+let done = dai.scan_and_wait(
     &["0xaaa", "0xbbb", "0xccc"],
     ScanOptions::default(),
     PollOptions {
@@ -284,15 +284,15 @@ let plaintext = open(&env, &kp.private_key_b64)?;
 
 ## Error handling
 
-All methods return `poh_sdk::Result<T>` — `std::result::Result<T, PohError>`.
+All methods return `poh_sdk::Result<T>` — `std::result::Result<T, DAIError>`.
 
 ```rust
-use poh_sdk::PohError;
+use poh_sdk::DAIError;
 
-match poh.get_balance("poh...").await {
+match dai.get_balance("dai...").await {
     Ok(bal)                               => println!("{}", bal.balance),
-    Err(PohError::Api { status, message }) => eprintln!("API {status}: {message}"),
-    Err(PohError::Network(_))             => eprintln!("network error"),
+    Err(DAIError::Api { status, message }) => eprintln!("API {status}: {message}"),
+    Err(DAIError::Network(_))             => eprintln!("network error"),
     Err(e)                                => eprintln!("{e}"),
 }
 ```
@@ -311,18 +311,18 @@ MIT
 
 ## Stablecoins (multi-currency)
 
-Five regional stablecoins ride alongside POH: `aiGEL`, `aiKGS`, `aiAMD`,
-`aiETB`, `aiBTN` (2 decimals; POH keeps 9 — μPOH).
+Five regional stablecoins ride alongside DAI: `aiGEL`, `aiKGS`, `aiAMD`,
+`aiETB`, `aiBTN` (2 decimals; DAI keeps 9 — μDAI).
 
 ```rust
 // Transfer 12.50 aiGEL (display units; scaled at the asset's own decimals)
 let tx = build_transfer_with_currency(&from, &to, 12.5, nonce + 1, 0, "", "aiGEL")?;
 let signed = sign_transaction(&tx, &private_key_pem)?;
 
-// Job payment in a stablecoin (6th-key rule — POH hashes unchanged)
+// Job payment in a stablecoin (6th-key rule — DAI hashes unchanged)
 let hash = compute_job_payment_hash_with_currency(&job_id, &me, &miner, 500, nonce, Some("aiKGS"));
 ```
 
-POH transactions hash byte-identically to the historical preimage (`currency`
-enters the signed payload only when non-POH) — existing integrations are
+DAI transactions hash byte-identically to the historical preimage (`currency`
+enters the signed payload only when non-DAI) — existing integrations are
 unaffected.

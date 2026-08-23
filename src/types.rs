@@ -98,7 +98,7 @@ pub struct BrainVerdict {
     pub reasoning: Option<String>,
 }
 
-/// Options for [`PohClient::poll_brain_verdict`].
+/// Options for [`DAIClient::poll_brain_verdict`].
 #[derive(Debug, Clone)]
 pub struct BrainPollOptions {
     /// Delay between verdict checks. Default: 1.5 s.
@@ -116,7 +116,7 @@ impl Default for BrainPollOptions {
     }
 }
 
-/// Combined result of [`PohClient::scan_and_verdict`].
+/// Combined result of [`DAIClient::scan_and_verdict`].
 #[derive(Debug, Clone)]
 pub struct ScanWithVerdict {
     pub scan:    ScanResult,
@@ -144,7 +144,7 @@ pub struct Method {
 /// Options for submitting a natural language job.
 #[derive(Debug, Clone, Default)]
 pub struct AskOptions {
-    /// Budget in POH (e.g. 0.5 = 0.5 POH). Required for skill jobs.
+    /// Budget in DAI (e.g. 0.5 = 0.5 DAI). Required for skill jobs.
     pub budget: f64,
     /// Wallet address to charge from. Required when budget > 0.
     pub wallet_address: Option<String>,
@@ -250,7 +250,7 @@ impl ChatOptions {
     }
 }
 
-/// Reply from [`crate::PohClient::chat`].
+/// Reply from [`crate::DAIClient::chat`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatResult {
@@ -284,7 +284,7 @@ pub struct ComputeOptions {
     pub model: String,
     /// Optional Hugging Face dataset id to ground the answer in (must be installed on the node).
     pub dataset: Option<String>,
-    /// Fee in POH (e.g. 0.5 = 0.5 POH). Required — compute jobs are never free.
+    /// Fee in DAI (e.g. 0.5 = 0.5 DAI). Required — compute jobs are never free.
     pub budget: f64,
     /// Wallet address paying the fee.
     pub wallet_address: String,
@@ -437,7 +437,7 @@ impl From<AskJobResultRaw> for AskJobResult {
 
 // ── Node info ──────────────────────────────────────────────────────────────
 
-/// Metadata about a PoH miner node.
+/// Metadata about a DAI miner node.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeInfo {
@@ -468,7 +468,7 @@ pub struct Skill {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WalletBalance {
     pub address: String,
-    /// Balance in μPOH (1 POH = 1_000_000_000 μPOH).
+    /// Balance in μDAI (1 DAI = 1_000_000_000 μDAI).
     pub balance: i64,
 }
 
@@ -498,16 +498,16 @@ pub struct TxHistoryResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PohTx {
+pub struct DAITx {
     pub from: String,
     pub to: String,
-    /// Amount in μPOH.
+    /// Amount in μDAI.
     pub amount: i64,
     pub fee: i64,
     pub nonce: i64,
     pub timestamp: i64,
     pub memo: String,
-    /// Asset ticker (aiGEL, aiKGS, …). `None` for POH — never serialized as "POH".
+    /// Asset ticker (aiGEL, aiKGS, …). `None` for DAI — never serialized as "DAI".
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub currency: Option<String>,
     #[serde(rename = "txHash", skip_serializing_if = "Option::is_none")]
@@ -549,6 +549,6 @@ pub struct KeyPair {
     pub signing_private_key: String,
     /// SPKI PEM public key. Register with the node via `register_signing_key()`.
     pub signing_public_key: String,
-    /// Canonical `poh…` address derived from `signing_public_key`.
+    /// Canonical `dai…` address derived from `signing_public_key`.
     pub address: String,
 }

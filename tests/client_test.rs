@@ -1,8 +1,8 @@
-//! Integration tests for PohClient — all public methods.
+//! Integration tests for DAIClient — all public methods.
 //! Uses wiremock to intercept HTTP calls; no live server required.
 
 use poh_sdk::{
-    AskOptions, BrainPollOptions, ComputeOptions, PohClient, PohClientOptions, PollOptions,
+    AskOptions, BrainPollOptions, ComputeOptions, DAIClient, DAIClientOptions, PollOptions,
     ScanOptions, JobStatusCode, generate_key_pair,
 };
 use serde_json::json;
@@ -11,8 +11,8 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-fn client(uri: &str) -> PohClient {
-    PohClient::new(PohClientOptions::new(uri))
+fn client(uri: &str) -> DAIClient {
+    DAIClient::new(DAIClientOptions::new(uri))
 }
 
 // ── scan ──────────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ async fn scan_returns_error_on_4xx() {
         .scan("0xabc", ScanOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, poh_sdk::PohError::Api { status: 403, .. }));
+    assert!(matches!(err, poh_sdk::DAIError::Api { status: 403, .. }));
 }
 
 // ── scan_bulk ─────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ async fn scan_bulk_rejects_empty_slice() {
         .scan_bulk(&[], ScanOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, poh_sdk::PohError::InvalidArgument(_)));
+    assert!(matches!(err, poh_sdk::DAIError::InvalidArgument(_)));
 }
 
 // ── get_job ───────────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ async fn poll_job_timeout_returns_poll_timeout_error() {
         .poll_job("j-processing", opts)
         .await
         .unwrap_err();
-    assert!(matches!(err, poh_sdk::PohError::PollTimeout));
+    assert!(matches!(err, poh_sdk::DAIError::PollTimeout));
 }
 
 // ── scan_and_wait ─────────────────────────────────────────────────────────────
@@ -326,10 +326,10 @@ async fn submit_job_errors_when_budget_positive_without_private_key() {
         .await;
 
     let err = client(&server.uri())
-        .submit_job("Summarise this", AskOptions::new(0.5).wallet("pohAlice"))
+        .submit_job("Summarise this", AskOptions::new(0.5).wallet("daiAlice"))
         .await
         .unwrap_err();
-    assert!(matches!(err, poh_sdk::PohError::InvalidArgument(_)));
+    assert!(matches!(err, poh_sdk::DAIError::InvalidArgument(_)));
 }
 
 #[tokio::test]
@@ -347,7 +347,7 @@ async fn submit_job_signs_a_nonce_bound_payment_proof_when_budget_positive() {
     Mock::given(method("GET"))
         .and(path("/api/miner/info"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "minerAddress": "pohMiner", "gasPrice": 1, "model": "qwen2.5:1.5b",
+            "minerAddress": "daiMiner", "gasPrice": 1, "model": "qwen2.5:1.5b",
             "queueLength": 0, "reputation": 1.0,
         })))
         .mount(&server)
@@ -355,7 +355,7 @@ async fn submit_job_signs_a_nonce_bound_payment_proof_when_budget_positive() {
     Mock::given(method("GET"))
         .and(path("/api/wallet/nonce"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "address": "pohAlice", "nonce": 3,
+            "address": "daiAlice", "nonce": 3,
         })))
         .mount(&server)
         .await;
@@ -368,7 +368,7 @@ async fn submit_job_signs_a_nonce_bound_payment_proof_when_budget_positive() {
         .await;
 
     let job_ref = client(&server.uri())
-        .submit_job("Summarise this", AskOptions::new(0.5).wallet("pohAlice").private_key(&kp.signing_private_key))
+        .submit_job("Summarise this", AskOptions::new(0.5).wallet("daiAlice").private_key(&kp.signing_private_key))
         .await
         .unwrap();
     assert_eq!(job_ref.job_id, "jnl-1");
@@ -381,10 +381,10 @@ async fn run_compute_errors_when_budget_not_positive() {
     let server = MockServer::start().await;
     let kp = generate_key_pair().unwrap();
     let err = client(&server.uri())
-        .run_compute("hi", ComputeOptions::new("qwen2.5:1.5b", 0.0, "pohAlice", &kp.signing_private_key))
+        .run_compute("hi", ComputeOptions::new("qwen2.5:1.5b", 0.0, "daiAlice", &kp.signing_private_key))
         .await
         .unwrap_err();
-    assert!(matches!(err, poh_sdk::PohError::InvalidArgument(_)));
+    assert!(matches!(err, poh_sdk::DAIError::InvalidArgument(_)));
 }
 
 #[tokio::test]
@@ -395,7 +395,7 @@ async fn run_compute_signs_payment_and_posts_model_dataset() {
     Mock::given(method("GET"))
         .and(path("/api/miner/info"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "minerAddress": "pohMiner", "gasPrice": 1, "model": "qwen2.5:1.5b",
+            "minerAddress": "daiMiner", "gasPrice": 1, "model": "qwen2.5:1.5b",
             "queueLength": 0, "reputation": 1.0,
         })))
         .mount(&server)
@@ -403,7 +403,7 @@ async fn run_compute_signs_payment_and_posts_model_dataset() {
     Mock::given(method("GET"))
         .and(path("/api/wallet/nonce"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "address": "pohAlice", "nonce": 7,
+            "address": "daiAlice", "nonce": 7,
         })))
         .mount(&server)
         .await;
@@ -415,7 +415,7 @@ async fn run_compute_signs_payment_and_posts_model_dataset() {
         .mount(&server)
         .await;
 
-    let opts = ComputeOptions::new("llama3.1:8b", 0.5, "pohAlice", &kp.signing_private_key)
+    let opts = ComputeOptions::new("llama3.1:8b", 0.5, "daiAlice", &kp.signing_private_key)
         .dataset("some-org/some-dataset");
     let job_ref = client(&server.uri())
         .run_compute("Summarize the top rows", opts)
@@ -439,7 +439,7 @@ async fn submit_job_returns_error_when_no_skill_matched() {
         .submit_job("random question", AskOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, poh_sdk::PohError::InvalidArgument(_)));
+    assert!(matches!(err, poh_sdk::DAIError::InvalidArgument(_)));
 }
 
 // ── get_job_status / get_job_result ───────────────────────────────────────────
@@ -576,32 +576,32 @@ async fn get_miner_info_returns_miner_metadata() {
     Mock::given(method("GET"))
         .and(path("/api/miner/info"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "minerAddress": "poh-miner-1", "gasPrice": 1000, "model": "llama-3",
+            "minerAddress": "dai-miner-1", "gasPrice": 1000, "model": "llama-3",
             "queueLength": 2, "reputation": 4.5
         })))
         .mount(&server)
         .await;
 
     let info = client(&server.uri()).get_miner_info().await.unwrap();
-    assert_eq!(info.miner_address, "poh-miner-1");
+    assert_eq!(info.miner_address, "dai-miner-1");
     assert_eq!(info.model, "llama-3");
 }
 
 // ── wallet / blockchain ───────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn get_balance_returns_address_and_μpoh() {
+async fn get_balance_returns_address_and_μdai() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path_regex("/api/wallet/balance.*"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "address": "poh123", "balance": 5_000_000_000i64
+            "address": "dai123", "balance": 5_000_000_000i64
         })))
         .mount(&server)
         .await;
 
-    let bal = client(&server.uri()).get_balance("poh123").await.unwrap();
-    assert_eq!(bal.address, "poh123");
+    let bal = client(&server.uri()).get_balance("dai123").await.unwrap();
+    assert_eq!(bal.address, "dai123");
     assert_eq!(bal.balance, 5_000_000_000);
 }
 
@@ -611,12 +611,12 @@ async fn get_nonce_returns_current_nonce() {
     Mock::given(method("GET"))
         .and(path_regex("/api/wallet/nonce.*"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "address": "poh123", "nonce": 7i64
+            "address": "dai123", "nonce": 7i64
         })))
         .mount(&server)
         .await;
 
-    let n = client(&server.uri()).get_nonce("poh123").await.unwrap();
+    let n = client(&server.uri()).get_nonce("dai123").await.unwrap();
     assert_eq!(n.nonce, 7);
 }
 
@@ -626,17 +626,17 @@ async fn get_transaction_history_returns_entries() {
     Mock::given(method("GET"))
         .and(path_regex("/api/wallet/history.*"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "address": "poh123",
+            "address": "dai123",
             "entries": [{"height": 100i64, "delta": 1_000_000_000i64, "txHash": "abc", "ts": 1700000000i64, "label": "transfer"}]
         })))
         .mount(&server)
         .await;
 
     let hist = client(&server.uri())
-        .get_transaction_history("poh123", 30)
+        .get_transaction_history("dai123", 30)
         .await
         .unwrap();
-    assert_eq!(hist.address, "poh123");
+    assert_eq!(hist.address, "dai123");
     assert_eq!(hist.entries.len(), 1);
     assert_eq!(hist.entries[0].delta, 1_000_000_000);
     assert_eq!(hist.entries[0].label, "transfer");
@@ -667,8 +667,8 @@ async fn submit_transaction_posts_tx_and_returns_hash() {
         .mount(&server)
         .await;
 
-    let tx = poh_sdk::PohTx {
-        from: "pohA".into(), to: "pohB".into(),
+    let tx = poh_sdk::DAITx {
+        from: "daiA".into(), to: "daiB".into(),
         amount: 1_000_000_000, fee: 0, nonce: 1, timestamp: 1700000000000, memo: "".into(),
         currency: None,
         tx_hash: Some("cafebabe".into()), signature: Some("sig".into()),
@@ -689,7 +689,7 @@ async fn register_signing_key_posts_and_succeeds() {
         .await;
 
     let res = client(&server.uri())
-        .register_signing_key("pohA", "pubkey-pem", "proof-b64", None)
+        .register_signing_key("daiA", "pubkey-pem", "proof-b64", None)
         .await
         .unwrap();
     assert_eq!(res["success"], json!(true));

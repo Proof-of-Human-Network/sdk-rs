@@ -5,7 +5,7 @@ pub mod signing;
 #[cfg(feature = "chatcrypto")]
 pub mod chatcrypto;
 
-pub use error::{PohError, Result};
+pub use error::{DAIError, Result};
 pub use types::*;
 #[cfg(feature = "signing")]
 pub use signing::{
@@ -29,16 +29,15 @@ use tokio::{sync::OnceCell, time::sleep};
 // ── Default nodes ──────────────────────────────────────────────────────────────
 
 pub const DEFAULT_NODES: &[&str] = &[
-    "https://miner.poh.ge",
-    "https://proofofhuman.ge",
-    "https://poh.assetux.com",
+    "https://miner.iamai.kg",
+    "https://iamai.kg",
 ];
 
 // ── Client options ────────────────────────────────────────────────────────────
 
-/// Configuration for [`PohClient`].
+/// Configuration for [`DAIClient`].
 #[derive(Debug, Clone)]
-pub struct PohClientOptions {
+pub struct DAIClientOptions {
     /// Fixed base URL. Use this OR `nodes`, not both.
     pub base_url: Option<String>,
     /// Candidate node URLs for automatic first-alive discovery.
@@ -54,7 +53,7 @@ pub struct PohClientOptions {
     pub local_base_url: Option<String>,
 }
 
-impl PohClientOptions {
+impl DAIClientOptions {
     /// Single fixed node — backward-compatible constructor.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
@@ -102,7 +101,7 @@ impl PohClientOptions {
     }
 }
 
-impl Default for PohClientOptions {
+impl Default for DAIClientOptions {
     fn default() -> Self {
         Self::with_nodes(DEFAULT_NODES.iter().copied())
     }
@@ -110,7 +109,7 @@ impl Default for PohClientOptions {
 
 // ── Poll options ──────────────────────────────────────────────────────────────
 
-/// Options for [`PohClient::poll_job`].
+/// Options for [`DAIClient::poll_job`].
 #[derive(Debug, Clone)]
 pub struct PollOptions {
     /// Delay between status checks. Default: 1.5 s.
@@ -155,50 +154,50 @@ async fn pick_first_alive(http: &Client, nodes: &[String]) -> Option<String> {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
-/// Async Proof of Human API client.
+/// Async Decentralized Artificial Intelligence API client.
 ///
 /// # Example — default nodes (multi-node discovery)
 /// ```no_run
-/// use poh_sdk::{PohClient, PohClientOptions};
+/// use poh_sdk::{DAIClient, DAIClientOptions};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let poh = PohClient::new(PohClientOptions::default());
-///     let res = poh.scan("0xabc...", Default::default()).await.unwrap();
+///     let dai = DAIClient::new(DAIClientOptions::default());
+///     let res = dai.scan("0xabc...", Default::default()).await.unwrap();
 ///     println!("{:?}", res.result);
 /// }
 /// ```
 ///
 /// # Example — single fixed node
 /// ```no_run
-/// use poh_sdk::{PohClient, PohClientOptions};
+/// use poh_sdk::{DAIClient, DAIClientOptions};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let poh = PohClient::new(PohClientOptions::new("https://proofofhuman.ge"));
-///     let res = poh.scan("0xabc...", Default::default()).await.unwrap();
+///     let dai = DAIClient::new(DAIClientOptions::new("https://iamai.kg"));
+///     let res = dai.scan("0xabc...", Default::default()).await.unwrap();
 ///     println!("{:?}", res.result);
 /// }
 /// ```
 #[derive(Clone)]
-pub struct PohClient {
-    opts:         PohClientOptions,
+pub struct DAIClient {
+    opts:         DAIClientOptions,
     http:         Client,
     #[cfg(feature = "tokio")]
     resolved_url: Arc<OnceCell<String>>,
 }
 
-impl std::fmt::Debug for PohClient {
+impl std::fmt::Debug for DAIClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PohClient")
+        f.debug_struct("DAIClient")
             .field("base_url", &self.opts.base_url)
             .field("nodes", &self.opts.nodes)
             .finish()
     }
 }
 
-impl PohClient {
-    pub fn new(opts: PohClientOptions) -> Self {
+impl DAIClient {
+    pub fn new(opts: DAIClientOptions) -> Self {
         let http = Client::builder()
             .timeout(opts.timeout)
             .build()
@@ -226,7 +225,7 @@ impl PohClient {
             };
             pick_first_alive(&self.http, &nodes)
                 .await
-                .ok_or(PohError::NoNodeAvailable)
+                .ok_or(DAIError::NoNodeAvailable)
         })
         .await
         .cloned()
@@ -235,7 +234,7 @@ impl PohClient {
     #[cfg(not(feature = "tokio"))]
     fn base_url(&self) -> Result<String> {
         self.opts.base_url.clone()
-            .ok_or_else(|| PohError::InvalidArgument(
+            .ok_or_else(|| DAIError::InvalidArgument(
                 "base_url required when tokio feature is disabled".into()
             ))
     }
@@ -280,9 +279,9 @@ impl PohClient {
         if Self::is_loopback(&remote) {
             return Ok(remote);
         }
-        Err(PohError::api(
+        Err(DAIError::api(
             403,
-            "This operation requires a local miner node. Set local_base_url in PohClientOptions.",
+            "This operation requires a local miner node. Set local_base_url in DAIClientOptions.",
             None,
         ))
     }
@@ -309,7 +308,7 @@ impl PohClient {
                 .as_ref()
                 .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
                 .unwrap_or(text);
-            return Err(PohError::api(status, message, parsed));
+            return Err(DAIError::api(status, message, parsed));
         }
         Ok(res.json::<T>().await?)
     }
@@ -346,7 +345,7 @@ impl PohClient {
         options: ScanOptions,
     ) -> Result<BulkScanResult> {
         if inputs.is_empty() {
-            return Err(PohError::InvalidArgument("inputs slice must not be empty".into()));
+            return Err(DAIError::InvalidArgument("inputs slice must not be empty".into()));
         }
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -386,7 +385,7 @@ impl PohClient {
                 return Ok(job);
             }
             if std::time::Instant::now() + opts.interval > deadline {
-                return Err(PohError::PollTimeout);
+                return Err(DAIError::PollTimeout);
             }
             sleep(opts.interval).await;
         }
@@ -426,7 +425,7 @@ impl PohClient {
                 return Ok(v);
             }
             if std::time::Instant::now() + opts.interval > deadline {
-                return Err(PohError::PollTimeout);
+                return Err(DAIError::PollTimeout);
             }
             sleep(opts.interval).await;
         }
@@ -478,10 +477,10 @@ impl PohClient {
     /// Returns immediately with an [`AskJobRef`]; poll with [`poll_job_result`]
     /// or use [`ask_and_wait`] to block until the answer is ready.
     ///
-    /// Returns [`PohError::InvalidArgument`] if no skill matches the question.
+    /// Returns [`DAIError::InvalidArgument`] if no skill matches the question.
     ///
-    /// [`poll_job_result`]: PohClient::poll_job_result
-    /// [`ask_and_wait`]: PohClient::ask_and_wait
+    /// [`poll_job_result`]: DAIClient::poll_job_result
+    /// [`ask_and_wait`]: DAIClient::ask_and_wait
     pub async fn submit_job(&self, question: &str, opts: AskOptions) -> Result<AskJobRef> {
         let max_budget = (opts.budget * 1_000_000_000.0) as i64;
 
@@ -496,7 +495,7 @@ impl PohClient {
 
         let rtype = route.get("type").and_then(|v| v.as_str()).unwrap_or("chat");
         if matches!(rtype, "cascade" | "tasks" | "dataset" | "hf-model" | "sequence") {
-            return Err(PohError::InvalidArgument(format!(
+            return Err(DAIError::InvalidArgument(format!(
                 "Route type \"{rtype}\" is free (task cascade / dataset / media). Use chat() instead of submit_job()."
             )));
         }
@@ -504,11 +503,11 @@ impl PohClient {
             let reason = route.get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("No skill matched the question");
-            return Err(PohError::InvalidArgument(reason.to_owned()));
+            return Err(DAIError::InvalidArgument(reason.to_owned()));
         }
         let skill_id = route.get("skillId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| PohError::InvalidArgument("No skillId in route response".into()))?;
+            .ok_or_else(|| DAIError::InvalidArgument("No skillId in route response".into()))?;
         let input = route.get("input").cloned()
             .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
@@ -531,10 +530,10 @@ impl PohClient {
         if max_budget > 0 {
             #[cfg(feature = "signing")]
             {
-                let requester = wallet_address.ok_or_else(|| PohError::InvalidArgument(
+                let requester = wallet_address.ok_or_else(|| DAIError::InvalidArgument(
                     "submit_job: wallet_address is required when budget > 0".into()
                 ))?;
-                let private_key = opts.private_key_pem.as_deref().ok_or_else(|| PohError::InvalidArgument(
+                let private_key = opts.private_key_pem.as_deref().ok_or_else(|| DAIError::InvalidArgument(
                     "submit_job: private_key_pem is required when budget > 0 — skill jobs always require a signed fee.".into()
                 ))?;
                 let job_id = crate::signing::generate_job_id();
@@ -543,12 +542,12 @@ impl PohClient {
                 let nonce_info = self.get_nonce(requester).await?;
                 let (tx_hash, signature) = crate::signing::sign_job_payment(
                     &job_id, requester, &miner_info.miner_address, max_budget, nonce_info.nonce, private_key,
-                ).map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+                ).map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
                 job_body["paymentTx"] = serde_json::json!({ "txHash": tx_hash, "signature": signature });
             }
             #[cfg(not(feature = "signing"))]
             {
-                return Err(PohError::InvalidArgument(
+                return Err(DAIError::InvalidArgument(
                     "submit_job: budget > 0 requires the 'signing' crate feature to be enabled".into()
                 ));
             }
@@ -563,26 +562,26 @@ impl PohClient {
     /// it carries a valid signed fee payment.
     ///
     /// ```no_run
-    /// use poh_sdk::{PohClient, PohClientOptions, ComputeOptions};
+    /// use poh_sdk::{DAIClient, DAIClientOptions, ComputeOptions};
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let poh = PohClient::new(PohClientOptions::default());
-    ///     let opts = ComputeOptions::new("llama3.1:8b", 0.5, "poh...", "<pem>")
+    ///     let dai = DAIClient::new(DAIClientOptions::default());
+    ///     let opts = ComputeOptions::new("llama3.1:8b", 0.5, "dai...", "<pem>")
     ///         .dataset("some-org/some-dataset");
-    ///     let ref_ = poh.run_compute("Summarize the top 5 rows", opts).await.unwrap();
+    ///     let ref_ = dai.run_compute("Summarize the top 5 rows", opts).await.unwrap();
     ///     println!("{}", ref_.job_id);
     /// }
     /// ```
     #[cfg(feature = "signing")]
     pub async fn run_compute(&self, prompt: &str, opts: ComputeOptions) -> Result<AskJobRef> {
         if opts.budget <= 0.0 {
-            return Err(PohError::InvalidArgument(
+            return Err(DAIError::InvalidArgument(
                 "run_compute: budget must be > 0 — compute jobs always require a fee".into()
             ));
         }
         if prompt.is_empty() && opts.attachments.as_ref().map(|a| a.is_empty()).unwrap_or(true) {
-            return Err(PohError::InvalidArgument(
+            return Err(DAIError::InvalidArgument(
                 "run_compute: prompt or attachments required".into(),
             ));
         }
@@ -594,7 +593,7 @@ impl PohClient {
         let (tx_hash, signature) = crate::signing::sign_job_payment(
             &job_id, &opts.wallet_address, &miner_info.miner_address,
             max_budget, nonce_info.nonce, &opts.private_key_pem,
-        ).map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        ).map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
 
         let mut payload = serde_json::json!({
             "prompt": if prompt.is_empty() { "Please analyze the attached file(s)." } else { prompt },
@@ -604,7 +603,7 @@ impl PohClient {
         }
         if let Some(a) = &opts.attachments {
             payload["attachments"] = serde_json::to_value(a)
-                .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+                .map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
         }
         if opts.route == Some(false) {
             payload["route"] = serde_json::Value::Bool(false);
@@ -631,11 +630,11 @@ impl PohClient {
     /// Attachments ≤1 MB: text inlined, images use a vision model path.
     ///
     /// On HTTP 412 with `code: HF_DATASET_DOWNLOAD_REQUIRED`, returns
-    /// [`PohError::Api`] whose `body` contains `datasetId` — call
+    /// [`DAIError::Api`] whose `body` contains `datasetId` — call
     /// [`download_dataset`] then retry with [`ChatOptions::dataset_id`].
     pub async fn chat(&self, message: &str, opts: ChatOptions) -> Result<ChatResult> {
         if message.is_empty() && opts.attachments.as_ref().map(|a| a.is_empty()).unwrap_or(true) {
-            return Err(PohError::InvalidArgument(
+            return Err(DAIError::InvalidArgument(
                 "chat: message or attachments required".into(),
             ));
         }
@@ -649,7 +648,7 @@ impl PohClient {
         }
         if let Some(a) = &opts.attachments {
             body["attachments"] = serde_json::to_value(a)
-                .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+                .map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
         }
         if let Some(id) = &opts.dataset_id {
             body["datasetId"] = serde_json::Value::String(id.clone());
@@ -674,7 +673,7 @@ impl PohClient {
     /// Download + install a Hugging Face dataset on the miner (row-capped).
     pub async fn download_dataset(&self, dataset_id: &str) -> Result<serde_json::Value> {
         if dataset_id.is_empty() {
-            return Err(PohError::InvalidArgument(
+            return Err(DAIError::InvalidArgument(
                 "download_dataset: dataset_id required".into(),
             ));
         }
@@ -688,7 +687,7 @@ impl PohClient {
     /// Remove an installed HF dataset from the miner.
     pub async fn delete_dataset(&self, dataset_id: &str) -> Result<serde_json::Value> {
         if dataset_id.is_empty() {
-            return Err(PohError::InvalidArgument(
+            return Err(DAIError::InvalidArgument(
                 "delete_dataset: dataset_id required".into(),
             ));
         }
@@ -732,7 +731,7 @@ impl PohClient {
                 return self.get_job_result(job_id).await;
             }
             if std::time::Instant::now() + opts.interval > deadline {
-                return Err(PohError::PollTimeout);
+                return Err(DAIError::PollTimeout);
             }
             sleep(opts.interval).await;
         }
@@ -741,14 +740,14 @@ impl PohClient {
     /// Convenience: route, submit, and wait for a natural language job.
     ///
     /// ```no_run
-    /// use poh_sdk::{PohClient, PohClientOptions, AskOptions, PollOptions};
+    /// use poh_sdk::{DAIClient, DAIClientOptions, AskOptions, PollOptions};
     ///
     /// #[tokio::main]
     /// async fn main() {
-    ///     let poh = PohClient::new(PohClientOptions::default());
-    ///     let res = poh.ask_and_wait(
+    ///     let dai = DAIClient::new(DAIClientOptions::default());
+    ///     let res = dai.ask_and_wait(
     ///         "What does vitalik.eth write about on Paragraph?",
-    ///         AskOptions::new(0.5).wallet("poh..."),
+    ///         AskOptions::new(0.5).wallet("dai..."),
     ///         PollOptions::default(),
     ///     ).await.unwrap();
     ///     println!("{:?}", res.nl_response.or(res.output.map(|o| o.to_string())));
@@ -784,7 +783,7 @@ impl PohClient {
 
     // ── Wallet / blockchain ───────────────────────────────────────────────────
 
-    /// Fetch the μPOH balance for an address.
+    /// Fetch the μDAI balance for an address.
     pub async fn get_balance(&self, address: &str) -> Result<WalletBalance> {
         let path = format!("/api/wallet/balance?address={}", urlencoding::encode(address));
         self.send(self.req(reqwest::Method::GET, &path).await?).await
@@ -817,8 +816,8 @@ impl PohClient {
         self.send(self.req(reqwest::Method::GET, "/api/tx/pending").await?).await
     }
 
-    /// Submit a signed [`PohTx`] to the network.
-    pub async fn submit_transaction(&self, tx: &PohTx) -> Result<TxSubmitResult> {
+    /// Submit a signed [`DAITx`] to the network.
+    pub async fn submit_transaction(&self, tx: &DAITx) -> Result<TxSubmitResult> {
         self.send(self.req(reqwest::Method::POST, "/api/tx/submit").await?.json(tx)).await
     }
 
@@ -854,7 +853,7 @@ impl PohClient {
         rotation_proof: Option<&str>,
     ) -> Result<serde_json::Value> {
         let proof = crate::signing::create_signing_proof(&key_pair.address, &key_pair.signing_private_key)
-            .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+            .map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
         self.register_signing_key(
             &key_pair.address,
             &key_pair.signing_public_key,
@@ -868,26 +867,26 @@ impl PohClient {
         self.send(self.req(reqwest::Method::GET, "/api/miner/info").await?).await
     }
 
-    /// Convenience: build, sign, and submit a POH transfer in one call.
+    /// Convenience: build, sign, and submit a DAI transfer in one call.
     ///
-    /// `amount_poh` is in whole POH units (e.g. `1.5` = 1.5 POH = 1_500_000_000 μPOH).
+    /// `amount_dai` is in whole DAI units (e.g. `1.5` = 1.5 DAI = 1_500_000_000 μDAI).
     /// The nonce is fetched automatically and incremented by 1.
     #[cfg(feature = "signing")]
     pub async fn transfer(
         &self,
         from: &str,
         to: &str,
-        amount_poh: f64,
+        amount_dai: f64,
         private_key_pem: &str,
         fee: i64,
         memo: &str,
     ) -> Result<TxSubmitResult> {
         let nonce_resp = self.get_nonce(from).await?;
         let next_nonce = nonce_resp.pending_nonce.unwrap_or(nonce_resp.nonce) + 1;
-        let tx = signing::build_transfer(from, to, amount_poh, next_nonce, fee, memo)
-            .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+        let tx = signing::build_transfer(from, to, amount_dai, next_nonce, fee, memo)
+            .map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
         let signed = signing::sign_transaction(&tx, private_key_pem)
-            .map_err(|e| PohError::InvalidArgument(e.to_string()))?;
+            .map_err(|e| DAIError::InvalidArgument(e.to_string()))?;
         self.submit_transaction(&signed).await
     }
 }

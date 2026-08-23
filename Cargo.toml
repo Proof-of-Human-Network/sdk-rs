@@ -2,9 +2,9 @@
 name        = "poh-sdk"
 version     = "0.6.0"
 edition     = "2021"
-description = "Proof of Human SDK — scan wallets, poll async jobs, access signal methods"
+description = "Decentralized Artificial Intelligence SDK — scan wallets, poll async jobs, access signal methods"
 license     = "MIT"
-keywords    = ["proof-of-human", "identity", "solana", "wallet", "web3"]
+keywords    = ["decentralized-artificial-intelligence", "identity", "solana", "wallet", "web3"]
 categories  = ["api-bindings", "authentication"]
 repository  = "https://github.com/proofofhuman/sdk-rs"
 
